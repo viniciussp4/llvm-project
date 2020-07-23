@@ -70,6 +70,7 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+#include "llvm/IR/DebugInfoMetadata.h"
 
 using namespace llvm;
 
@@ -389,6 +390,11 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
 
   // Now that we have all of the call sites, loop over them and inline them if
   // it looks profitable to do so.
+  std::map<Function*, std::string > CalleeFunctionName;
+  std::map<Function*, unsigned > CalleeBBs;
+  std::map<Function*, unsigned > CalleeInstructions;
+  std::map<Function*, unsigned > CalleeInlinings;
+  std::map<Function*, StringRef > CalleeFilenames;
   bool Changed = false;
   bool LocalChange;
   do {
@@ -468,6 +474,27 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
           });
           continue;
         }
+
+        // Coletar estatísticas do Callee
+        std::string CalleeName = Callee->getName().str();
+        CalleeName.erase(std::remove(CalleeName.begin(), CalleeName.end(), '\n'), CalleeName.end());
+        CalleeName.erase(std::remove(CalleeName.begin(), CalleeName.end(), '\r'), CalleeName.end());
+        CalleeFunctionName[Callee] = CalleeName;
+        
+        if(!CalleeInlinings.count(Callee)) 
+          CalleeInlinings[Callee] = 0;
+        CalleeInlinings[Callee]++;
+        
+        if(!CalleeBBs.count(Callee)) 
+          CalleeBBs[Callee] = Callee->getBasicBlockList().size();
+        
+        if(!CalleeInstructions.count(Callee)) 
+          CalleeInstructions[Callee] = Callee->getInstructionCount();
+        
+        if(!CalleeFilenames.count(Callee)) 
+          CalleeFilenames[Callee] = Callee->getParent()->getSourceFileName();
+        //        
+
         ++NumInlined;
 
         emitInlinedInto(ORE, DLoc, Block, *Callee, *Caller, *OIC);
@@ -537,6 +564,18 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       LocalChange = true;
     }
   } while (LocalChange);
+
+  for ( auto calleeMap = CalleeFunctionName.begin(); calleeMap != CalleeFunctionName.end(); ++calleeMap  )
+  {
+    Function* F = calleeMap->first;
+    StringRef functionName = calleeMap->second;
+    unsigned BBs = CalleeBBs[F];
+    unsigned Insts = CalleeInstructions[F];
+    unsigned Inlinings = CalleeInlinings[F];
+    StringRef Filename = CalleeFilenames[F];
+
+    errs() << "~> Inlined Function: |Function:" << F << "|Name:" << functionName << "|BBs:" << BBs << "|Insts:" << Insts << "|Inlinings:" << Inlinings << "|Filename:" << Filename << "\n";
+  } 
 
   return Changed;
 }
