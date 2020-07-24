@@ -307,12 +307,14 @@ bool LegacyInlinerBase::runOnSCC(CallGraphSCC &SCC) {
 }
 
 bool Profitable(Function* Callee) {
+  bool isDiscardable = true;
+  bool hasGlobalValue = false;
   if(Callee) {
     if (!Callee->isDiscardableIfUnused())
     {
       std::string str = "\n~>[Not Inlined] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
       errs() << str;
-      return false;
+      isDiscardable = false;
     } 
 
     for (BasicBlock &BB : *Callee)
@@ -329,14 +331,14 @@ bool Profitable(Function* Callee) {
             std::string str = "\n~>[Not Inlined] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
             errs() << str;
 
-            return false;
+            hasGlobalValue = true;
           }
         }
       }
     }
   }
 
-  return true;
+  return isDiscardable && !hasGlobalValue;
 }
 
 static bool
