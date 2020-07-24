@@ -306,62 +306,33 @@ bool LegacyInlinerBase::runOnSCC(CallGraphSCC &SCC) {
   return inlineCalls(SCC);
 }
 
-bool isInstGlobal(Instruction* I) {
-  for (Use &U : (&*I)->operands()) {
-    
-    if(Instruction* UI = dyn_cast<Instruction>(U)) {
-      if(isInstGlobal(UI))
-        return true;
-    }
-
-    else if(isa<GlobalValue>(U)){
-      return true;
-    }
-
-    // else if (GEPOperator* gepo = dyn_cast<GEPOperator>(&U))
-    // {
-    //     errs() << "GEPO - " << *gepo << "\n";
-    //     if (GlobalVariable* gv = dyn_cast<GlobalVariable>(gepo->getPointerOperand()))
-    //     {
-    //         errs() << "GV - " << *gv << "\n";
-    //     }
-    //     for (auto it = gepo->idx_begin(), et = gepo->idx_end(); it != et; ++it)
-    //     {
-    //         if (GlobalVariable* gv = dyn_cast<GlobalVariable>(*it))
-    //         {
-    //             errs() << "GVi - " << *gv <<  "\n";
-    //         }
-    //     }
-    // }
-  }
-
-  return false;
-}
-
 bool Profitable(Function* Callee) {
   if(Callee) {
     if (!Callee->isDiscardableIfUnused())
     {
-      std::string str = "\n~> !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+      std::string str = "\n~>[Not Inlined] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
       errs() << str;
-      // return false;
+      return false;
     } 
 
     for (BasicBlock &BB : *Callee)
     {
-        for (Instruction &I : BB) {
-          if(isInstGlobal(&I))
-          {
+      for (Instruction &I : BB) {
+        for (const Value *Op : I.operands())
+        {
+          if (isa<GlobalValue>(*Op)) 
+          {  
             std::string IPrint;
             llvm::raw_string_ostream rso(IPrint);
             I.print(rso);
 
-            std::string str = "\n~> Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+            std::string str = "\n~>[Not Inlined] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
             errs() << str;
-            
+
             return false;
           }
         }
+      }
     }
   }
 
@@ -640,7 +611,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
     unsigned Inlinings = CalleeInlinings[F];
     StringRef Filename = CalleeFilenames[F];
 
-    // errs() << "~> Inlined Function: |Function:" << F << "|Name:" << functionName << "|BBs:" << BBs << "|Insts:" << Insts << "|Inlinings:" << Inlinings << "|Filename:" << Filename << "\n";
+    errs() << "~> Inlined Function: |Function:" << F << "|Name:" << functionName << "|BBs:" << BBs << "|Insts:" << Insts << "|Inlinings:" << Inlinings << "|Filename:" << Filename << "\n";
   } 
 
   return Changed;
