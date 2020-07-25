@@ -329,17 +329,31 @@ bool Profitable(Function* Callee) {
             PointerOperand = SI->getPointerOperand();
           else if(LI)
             PointerOperand = LI->getPointerOperand();
-            
-          if(PointerOperand && isa<GlobalValue>(PointerOperand)) {
-            std::string IPrint;
-            llvm::raw_string_ostream rso(IPrint);
-            I.print(rso);
 
-            std::string Str = "\n~>[Profitable] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-            errs() << Str;
+          if(PointerOperand) 
+          {
+            // errs() << "\nPointer Operand: ";
+            // PointerOperand->print(errs());
+            // errs() << "\n";
+            if(!isa<GlobalValue>(PointerOperand) && isa<GEPOperator>(PointerOperand)) 
+            {
+              // errs() << "\nÉ um GetElementPtrInst.\n";
+              GEPOperator* GEPI = cast<GEPOperator>(PointerOperand);
+              PointerOperand = GEPI->getPointerOperand();
+            }
 
-            HasGlobalValue = true;
+            if(isa<GlobalValue>(PointerOperand)) {
+              std::string IPrint;
+              llvm::raw_string_ostream rso(IPrint);
+              I.print(rso);
+
+              std::string Str = "\n~>[Profitable] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+              errs() << Str;
+
+              HasGlobalValue = true;
+            }
           }
+            
       }
     }
   }
