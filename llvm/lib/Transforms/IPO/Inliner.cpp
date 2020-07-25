@@ -332,12 +332,8 @@ bool Profitable(Function* Callee) {
 
           if(PointerOperand) 
           {
-            // errs() << "\nPointer Operand: ";
-            // PointerOperand->print(errs());
-            // errs() << "\n";
             if(!isa<GlobalValue>(PointerOperand) && isa<GEPOperator>(PointerOperand)) 
             {
-              // errs() << "\nÉ um GetElementPtrInst.\n";
               GEPOperator* GEPI = cast<GEPOperator>(PointerOperand);
               PointerOperand = GEPI->getPointerOperand();
             }
