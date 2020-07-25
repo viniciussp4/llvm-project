@@ -307,38 +307,44 @@ bool LegacyInlinerBase::runOnSCC(CallGraphSCC &SCC) {
 }
 
 bool Profitable(Function* Callee) {
-  bool isDiscardable = true;
-  bool hasGlobalValue = false;
+  bool IsDiscardable = true;
+  bool HasGlobalValue = false;
   if(Callee) {
     if (!Callee->isDiscardableIfUnused())
     {
-      std::string str = "\n~>[Not Inlined] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-      errs() << str;
-      isDiscardable = false;
+      std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+      errs() << Str;
+      IsDiscardable = false;
     } 
 
     for (BasicBlock &BB : *Callee)
     {
-      for (Instruction &I : BB) {
-        for (const Value *Op : I.operands())
-        {
-          if (isa<GlobalValue>(*Op)) 
-          {  
+      for (Instruction &I : BB) 
+      {
+          StoreInst* SI = dyn_cast<StoreInst>(&I);
+          LoadInst* LI = dyn_cast<LoadInst>(&I);
+          Value* PointerOperand = nullptr;
+
+          if(SI)
+            PointerOperand = SI->getPointerOperand();
+          else if(LI)
+            PointerOperand = LI->getPointerOperand();
+            
+          if(PointerOperand && isa<GlobalValue>(PointerOperand)) {
             std::string IPrint;
             llvm::raw_string_ostream rso(IPrint);
             I.print(rso);
 
-            std::string str = "\n~>[Not Inlined] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-            errs() << str;
+            std::string Str = "\n~>[Profitable] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+            errs() << Str;
 
-            hasGlobalValue = true;
+            HasGlobalValue = true;
           }
-        }
       }
     }
   }
 
-  return isDiscardable && !hasGlobalValue;
+  return IsDiscardable || !HasGlobalValue;
 }
 
 static bool
