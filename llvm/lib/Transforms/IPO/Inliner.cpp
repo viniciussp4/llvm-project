@@ -316,7 +316,7 @@ bool profitableFilter1(Function* Callee)
   if(Callee) {
     if (!Callee->isDiscardableIfUnused())
     {
-      std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+      std::string Str = "\n~>[Profitable 1] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
       errs() << Str;
       IsDiscardable = false;
     } 
@@ -347,7 +347,7 @@ bool profitableFilter1(Function* Callee)
             llvm::raw_string_ostream rso(IPrint);
             I.print(rso);
 
-            std::string Str = "\n~>[Profitable] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+            std::string Str = "\n~>[Profitable 1] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
             errs() << Str;
 
             HasGlobalValue = true;
@@ -362,9 +362,19 @@ bool profitableFilter1(Function* Callee)
 
 bool profitableFilter2(CallBase &CB) 
 {
-  bool hasGlobalValue = false;
+  bool HasGlobalValue = false;
+  bool IsDiscardable = true;
+
   Function *Caller = CB.getCaller();
   Function *Callee = CB.getCalledFunction();
+
+  if (!Callee->isDiscardableIfUnused())
+  {
+    std::string Str = "\n~>[Profitable 2] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+    errs() << Str;
+    IsDiscardable = false;
+  } 
+
   
   std::vector<unsigned> UsedArgumentsIndexes;
 
@@ -394,12 +404,12 @@ bool profitableFilter2(CallBase &CB)
     }
 
     if(isa<GlobalValue>(Operand)) {
-      errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses Global Value '" << Operand->getName() << "' in the " << UsedArgumentsIndexes[i] << "th argument\n";
-      hasGlobalValue = true;
+      errs() << "\n[Profitable 2] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses Global Value '" << Operand->getName() << "' in the " << UsedArgumentsIndexes[i] << "th argument\n";
+      HasGlobalValue = true;
     }
   }
 
-  return !hasGlobalValue;
+  return IsDiscardable || !HasGlobalValue;
 }
 
 bool Profitable(CallBase &CB) {
