@@ -76,6 +76,9 @@ using namespace llvm;
 
 #define DEBUG_TYPE "inline"
 
+bool ENABLE_FILTER_1 = true; // (IsDiscardable || !HasGlobalValue)
+bool ENABLE_FILTER_2 = false; // Analyze function call arguments, searching for global variables
+
 STATISTIC(NumInlined, "Number of functions inlined");
 STATISTIC(NumCallsDeleted, "Number of call sites deleted, not inlined");
 STATISTIC(NumDeleted, "Number of functions deleted because all callers found");
@@ -306,7 +309,8 @@ bool LegacyInlinerBase::runOnSCC(CallGraphSCC &SCC) {
   return inlineCalls(SCC);
 }
 
-bool Profitable(Function* Callee) {
+bool profitableFilter1(Function* Callee) 
+{
   bool IsDiscardable = true;
   bool HasGlobalValue = false;
   if(Callee) {
@@ -321,40 +325,98 @@ bool Profitable(Function* Callee) {
     {
       for (Instruction &I : BB) 
       {
-          StoreInst* SI = dyn_cast<StoreInst>(&I);
-          LoadInst* LI = dyn_cast<LoadInst>(&I);
-          Value* PointerOperand = nullptr;
+        StoreInst* SI = dyn_cast<StoreInst>(&I);
+        LoadInst* LI = dyn_cast<LoadInst>(&I);
+        Value* PointerOperand = nullptr;
 
-          if(SI)
-            PointerOperand = SI->getPointerOperand();
-          else if(LI)
-            PointerOperand = LI->getPointerOperand();
+        if(SI)
+          PointerOperand = SI->getPointerOperand();
+        else if(LI)
+          PointerOperand = LI->getPointerOperand();
 
-          if(PointerOperand) 
+        if(PointerOperand) 
+        {
+          if(!isa<GlobalValue>(PointerOperand) && isa<GEPOperator>(PointerOperand)) 
           {
-            if(!isa<GlobalValue>(PointerOperand) && isa<GEPOperator>(PointerOperand)) 
-            {
-              GEPOperator* GEPI = cast<GEPOperator>(PointerOperand);
-              PointerOperand = GEPI->getPointerOperand();
-            }
-
-            if(isa<GlobalValue>(PointerOperand)) {
-              std::string IPrint;
-              llvm::raw_string_ostream rso(IPrint);
-              I.print(rso);
-
-              std::string Str = "\n~>[Profitable] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-              errs() << Str;
-
-              HasGlobalValue = true;
-            }
+            GEPOperator* GEPI = cast<GEPOperator>(PointerOperand);
+            PointerOperand = GEPI->getPointerOperand();
           }
-            
+
+          if(isa<GlobalValue>(PointerOperand)) {
+            std::string IPrint;
+            llvm::raw_string_ostream rso(IPrint);
+            I.print(rso);
+
+            std::string Str = "\n~>[Profitable] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+            errs() << Str;
+
+            HasGlobalValue = true;
+          }
+        }
       }
     }
   }
 
   return IsDiscardable || !HasGlobalValue;
+}
+
+bool profitableFilter2(CallBase &CB) 
+{
+  bool hasGlobalValue = false;
+  Function *Caller = CB.getCaller();
+  Function *Callee = CB.getCalledFunction();
+  
+  std::vector<unsigned> UsedArgumentsIndexes;
+
+  for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg) 
+  {
+    for(User* U: arg->users())
+    { 
+      if(isa<StoreInst>(U) || isa<LoadInst>(U)) 
+      {
+        Function* F = cast<Instruction>(U)->getFunction();
+        if(F == Callee) {
+          unsigned ArgIndex = arg->getArgNo();
+          UsedArgumentsIndexes.push_back(ArgIndex);
+        }
+      }
+    }
+  }
+
+  for(unsigned i = 0; i< UsedArgumentsIndexes.size(); i++) 
+  {
+    Value* Operand = CB.getArgOperand(UsedArgumentsIndexes[i]);  
+    
+    if(!isa<GlobalValue>(Operand) && isa<GEPOperator>(Operand)) 
+    {
+      GEPOperator* GEPI = cast<GEPOperator>(Operand);
+      Operand = GEPI->getPointerOperand();
+    }
+
+    if(isa<GlobalValue>(Operand)) {
+      errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses Global Value '" << Operand->getName() << "' in the " << UsedArgumentsIndexes[i] << "th argument\n";
+      hasGlobalValue = true;
+    }
+  }
+
+  return !hasGlobalValue;
+}
+
+bool Profitable(CallBase &CB) {
+  bool IsProfitable = true;
+  
+  if(ENABLE_FILTER_1)
+  {
+    Function *Callee = CB.getCalledFunction();
+    IsProfitable = IsProfitable && profitableFilter1(Callee);
+  }
+
+  if(ENABLE_FILTER_2)
+  {
+    IsProfitable = IsProfitable && profitableFilter2(CB);
+  }
+
+  return IsProfitable;
 }
 
 static bool
@@ -508,7 +570,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         BasicBlock *Block = CB.getParent();
 
         // Custom profitable
-        if (!Profitable(Callee))
+        if (!Profitable(CB))
           continue;
 
         // Attempt to inline the function.
