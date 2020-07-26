@@ -77,7 +77,7 @@ using namespace llvm;
 #define DEBUG_TYPE "inline"
 
 bool ENABLE_FILTER_1 = true; // (IsDiscardable || !HasGlobalValue)
-bool ENABLE_FILTER_2 = false; // Analyze function call arguments, searching for global variables
+bool ENABLE_FILTER_2 = true; // Analyze function call arguments, searching for global variables
 
 STATISTIC(NumInlined, "Number of functions inlined");
 STATISTIC(NumCallsDeleted, "Number of call sites deleted, not inlined");
