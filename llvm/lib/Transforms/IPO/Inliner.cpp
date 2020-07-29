@@ -76,8 +76,9 @@ using namespace llvm;
 
 #define DEBUG_TYPE "inline"
 
-bool ENABLE_FILTER_1 = true; // (IsDiscardable || !HasGlobalValue)
-bool ENABLE_FILTER_2 = true; // Analyze function call arguments, searching for global variables
+bool ENABLE_FILTER_1 = false; // (IsDiscardable || !HasGlobalValue)
+bool ENABLE_FILTER_2 = false; // Analyze function call arguments, searching for global variables
+bool ENABLE_FILTER_3 = true; // Looking for allocas
 
 STATISTIC(NumInlined, "Number of functions inlined");
 STATISTIC(NumCallsDeleted, "Number of call sites deleted, not inlined");
@@ -412,6 +413,60 @@ bool profitableFilter2(CallBase &CB)
   return IsDiscardable || !HasGlobalValue;
 }
 
+bool profitableFilter3(CallBase &CB) 
+{
+  bool HasAlloca = false;
+  bool IsDiscardable = true;
+  unsigned LoadAndStores = 0;
+
+  Function *Caller = CB.getCaller();
+  Function *Callee = CB.getCalledFunction();
+
+  if (!Callee->isDiscardableIfUnused())
+  {
+    std::string Str = "\n~>[Profitable 3] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+    errs() << Str;
+    IsDiscardable = false;
+  } 
+
+  
+  std::vector<unsigned> UsedArgumentsIndexes;
+
+  for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg) 
+  {
+    for(User* U: arg->users())
+    { 
+      if(isa<StoreInst>(U) || isa<LoadInst>(U)) 
+      {
+        Function* F = cast<Instruction>(U)->getFunction();
+        if(F == Callee) {
+          LoadAndStores++;
+          unsigned ArgIndex = arg->getArgNo();
+          UsedArgumentsIndexes.push_back(ArgIndex);
+        }
+      }
+    }
+  }
+
+  for(unsigned i = 0; i< UsedArgumentsIndexes.size(); i++) 
+  {
+    Value* Operand = CB.getArgOperand(UsedArgumentsIndexes[i]);  
+    
+    if(isa<GEPOperator>(Operand)) 
+    {
+      GEPOperator* GEPI = cast<GEPOperator>(Operand);
+      Operand = GEPI->getPointerOperand();
+    }
+
+    if(isa<AllocaInst>(Operand)) {
+      errs() << "\n[Profitable 3] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << UsedArgumentsIndexes[i] << "th argument\n";
+      HasAlloca = true;
+    }
+  }
+
+  return IsDiscardable || HasAlloca || LoadAndStores == 0;
+}
+
 bool Profitable(CallBase &CB) {
   bool IsProfitable = true;
   
@@ -424,6 +479,11 @@ bool Profitable(CallBase &CB) {
   if(ENABLE_FILTER_2)
   {
     IsProfitable = IsProfitable && profitableFilter2(CB);
+  }
+  
+  if(ENABLE_FILTER_3)
+  {
+    IsProfitable = IsProfitable && profitableFilter3(CB);
   }
 
   return IsProfitable;
