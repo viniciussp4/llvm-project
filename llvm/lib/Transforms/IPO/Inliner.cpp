@@ -104,6 +104,9 @@ enum class InlinerFunctionImportStatsOpts {
 
 class InliningData {
 public:
+  Function* Caller;
+  Function* Callee;
+
   std::string CalleeName;
   int CalleeBBs;
   int CalleeInsts;
@@ -121,6 +124,9 @@ public:
   }
 
   InliningData(Function* Callee, Function* Caller, bool Filtered = false) {
+    this->Callee = Callee;
+    this->Caller = Caller;
+
     this->CalleeName = this->sanitizeFunctionName(Callee->getName());
     this->CalleeBBs = Callee->getBasicBlockList().size();
     this->CalleeInsts = Callee->getInstructionCount();
@@ -129,13 +135,17 @@ public:
 
     this->Filename = Callee->getParent()->getSourceFileName();
     this->Filtered = Filtered;
-    this->occurences = 0;
+    this->occurences = 1;
   }
 
   std::string print() {
-    std::string str = this->Filtered ? "[Filtered Function]: " : "[Inlined Function]: ";
-    str += "|Callee:" + this->CalleeName + "|Caller:" + this->CallerName + "|CalleeBBs:" + std::to_string(this->CalleeBBs) + "|CalleeInsts:" + std::to_string(this->CalleeInsts) + "|Filename" + this->Filename;
+    std::string str = this->Filtered ? "~> [Filtered Function]: " : "~> [Inlined Function]: ";
+    str += "|Callee:" + this->CalleeName + "|Caller:" + this->CallerName + "|CalleeBBs:" + std::to_string(this->CalleeBBs) + "|CalleeInsts:" + std::to_string(this->CalleeInsts) + "|Occurrences:" + std::to_string(this->occurences) + "|Filename:" + this->Filename;
     return "\n" + str + "\n";
+  }
+
+  bool isEqual(InliningData ID) {
+    return this->Callee == ID.Callee && this->Caller == ID.Caller;
   }
 };
 
@@ -146,7 +156,7 @@ public:
     InliningData newID = InliningData(Callee, Caller, Filtered);
     InliningData* existingID = nullptr;
     for (unsigned i = 0; i < this->vector.size(); i++) {
-      if(newID.print() == vector[i].print()) {
+      if(newID.isEqual(vector[i])) {
         existingID = &vector[i];
         break;
       }
