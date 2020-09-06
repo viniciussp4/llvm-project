@@ -373,8 +373,7 @@ bool LegacyInlinerBase::runOnSCC(CallGraphSCC &SCC) {
   return inlineCalls(SCC);
 }
 
-bool Profitable(CallBase &CB)
-{
+bool Profitable(CallBase &CB) {
   bool HasAlloca = false;
   bool IsDiscardable = true;
   unsigned LoadAndStores = 0;
@@ -384,19 +383,20 @@ bool Profitable(CallBase &CB)
 
   if (!Callee->isDiscardableIfUnused())
   {
-    errs() << "\n~> [Profitable] !isDiscardableIfUnused: " << Callee->getName().str() << " | " << Callee->getParent()->getSourceFileName() << "\n";
+    std::string Str = "\n~>[Profitable 3] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+    errs() << Str;
     IsDiscardable = false;
   }
 
-  //Count Loads/Stores
   for (Instruction &I : instructions(Callee)) {
     if (isa<LoadInst>(&I) || isa<StoreInst>(&I)) LoadAndStores++;
   }
 
-  // Collect index of arguments that are used in Store/Load insts
   std::set<unsigned> UsedArgumentsIndexes;
+
   for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg)
   {
+    std::set<Value *> ExpandToUsers;
     for(User* U: arg->users())
     {
       StoreInst *SI = dyn_cast<StoreInst>(U);
@@ -408,22 +408,44 @@ bool Profitable(CallBase &CB)
           UsedArgumentsIndexes.insert(ArgIndex);
         }
       }
+
+      GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(U);
+      if (GEP) {
+        ExpandToUsers.insert(GEP);
+      }
+    }
+    for (Value *V : ExpandToUsers) {
+      for(User* U: V->users())
+      {
+        StoreInst *SI = dyn_cast<StoreInst>(U);
+        if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+        {
+          Function* F = cast<Instruction>(U)->getFunction();
+          if(F == Callee) {
+            unsigned ArgIndex = arg->getArgNo();
+            UsedArgumentsIndexes.insert(ArgIndex);
+          }
+        }
+      }
     }
   }
-
-  // In caller, check if at least one argument passed to Callee is an Alloca
   for(unsigned ArgId : UsedArgumentsIndexes)
   {
     Value* Operand = CB.getArgOperand(ArgId);
 
+    if(isa<GetElementPtrInst>(Operand))
+    {
+      GetElementPtrInst *GEPI = cast<GetElementPtrInst>(Operand);
+      Operand = GEPI->getPointerOperand();
+    }
     if(isa<GEPOperator>(Operand))
     {
       GEPOperator* GEPI = cast<GEPOperator>(Operand);
       Operand = GEPI->getPointerOperand();
     }
 
-    if(isa<AllocaInst>(Operand)) {
-      errs() << "\n~> [Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+    if(isa<AllocaInst>(Operand) || isa<Argument>(Operand)) {
+      errs() << "\n[Profitable 3] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
       HasAlloca = true;
     }
   }
