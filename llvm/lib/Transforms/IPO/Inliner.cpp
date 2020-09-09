@@ -383,7 +383,7 @@ bool Profitable(CallBase &CB) {
 
   if (!Callee->isDiscardableIfUnused())
   {
-    std::string Str = "\n~>[Profitable 3] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+    std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
     errs() << Str;
     IsDiscardable = false;
   }
@@ -429,6 +429,7 @@ bool Profitable(CallBase &CB) {
       }
     }
   }
+  
   for(unsigned ArgId : UsedArgumentsIndexes)
   {
     Value* Operand = CB.getArgOperand(ArgId);
@@ -444,8 +445,8 @@ bool Profitable(CallBase &CB) {
       Operand = GEPI->getPointerOperand();
     }
 
-    if(isa<AllocaInst>(Operand) || isa<Argument>(Operand)) {
-      errs() << "\n[Profitable 3] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+    if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
+      errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
       HasAlloca = true;
     }
   }
