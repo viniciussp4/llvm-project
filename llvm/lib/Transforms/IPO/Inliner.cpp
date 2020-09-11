@@ -613,11 +613,11 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         BasicBlock *Block = CB.getParent();
 
         // Custom profitable
-        if (!Profitable(CB))
-        {
-          IDV.AddInlining(Callee, Caller, true);
-          continue;
-        }
+        // if (!Profitable(CB))
+        // {
+        //   IDV.AddInlining(Callee, Caller, true);
+        //   continue;
+        // }
 
         // Attempt to inline the function.
         using namespace ore;

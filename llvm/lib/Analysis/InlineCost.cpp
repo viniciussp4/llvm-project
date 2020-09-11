@@ -22,6 +22,7 @@
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -628,6 +629,91 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     InstructionCostDetailMap[I].ThresholdAfter = Threshold;
   }
 
+  bool Profitable(CallBase &CB) {
+    bool HasAlloca = false;
+    bool IsDiscardable = true;
+    unsigned LoadAndStores = 0;
+
+    Function *Caller = CB.getCaller();
+    Function *Callee = CB.getCalledFunction();
+
+    if (!Callee->isDiscardableIfUnused())
+    {
+      std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+      errs() << Str;
+      IsDiscardable = false;
+    }
+
+    for (BasicBlock &BB : *Callee) {
+      if (!DeadBlocks.count(&BB)) {
+        for (Instruction &I : BB) {
+          if (isa<LoadInst>(&I) || isa<StoreInst>(&I)) LoadAndStores++;
+        }
+      }
+    }
+
+    std::set<unsigned> UsedArgumentsIndexes;
+
+    for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg)
+    {
+      std::set<Value *> ExpandToUsers;
+      for(User* U: arg->users())
+      {
+        StoreInst *SI = dyn_cast<StoreInst>(U);
+        if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+        {
+          Function* F = cast<Instruction>(U)->getFunction();
+          if(F == Callee) {
+            unsigned ArgIndex = arg->getArgNo();
+            UsedArgumentsIndexes.insert(ArgIndex);
+          }
+        }
+
+        GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(U);
+        if (GEP) {
+          ExpandToUsers.insert(GEP);
+        }
+      }
+      for (Value *V : ExpandToUsers) {
+        for(User* U: V->users())
+        {
+          StoreInst *SI = dyn_cast<StoreInst>(U);
+          if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+          {
+            Function* F = cast<Instruction>(U)->getFunction();
+            if(F == Callee) {
+              unsigned ArgIndex = arg->getArgNo();
+              UsedArgumentsIndexes.insert(ArgIndex);
+            }
+          }
+        }
+      }
+    }
+    
+    for(unsigned ArgId : UsedArgumentsIndexes)
+    {
+      Value* Operand = CB.getArgOperand(ArgId);
+
+      if(isa<GetElementPtrInst>(Operand))
+      {
+        GetElementPtrInst *GEPI = cast<GetElementPtrInst>(Operand);
+        Operand = GEPI->getPointerOperand();
+      }
+      if(isa<GEPOperator>(Operand))
+      {
+        GEPOperator* GEPI = cast<GEPOperator>(Operand);
+        Operand = GEPI->getPointerOperand();
+      }
+
+      if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
+        errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+        HasAlloca = true;
+      }
+    }
+
+    return IsDiscardable || HasAlloca || LoadAndStores == 0;
+  }
+
   InlineResult finalizeAnalysis() override {
     // Loops generally act a lot like calls in that they act like barriers to
     // movement, require a certain amount of setup, etc. So when optimising for
@@ -656,7 +742,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     else if (NumVectorInstructions <= NumInstructions / 2)
       Threshold -= VectorBonus / 2;
 
-    if (IgnoreThreshold || Cost < std::max(1, Threshold))
+    if (Profitable(CandidateCall) && (IgnoreThreshold || Cost < std::max(1, Threshold)))
       return InlineResult::success();
     return InlineResult::failure("Cost over threshold.");
   }
