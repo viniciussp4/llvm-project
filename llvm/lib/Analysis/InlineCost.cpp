@@ -644,12 +644,9 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
       IsDiscardable = false;
     }
 
-    for (BasicBlock &BB : *Callee) {
-      if (!DeadBlocks.count(&BB)) {
-        for (Instruction &I : BB) {
-          if (isa<LoadInst>(&I) || isa<StoreInst>(&I)) LoadAndStores++;
-        }
-      }
+    for (Instruction &I : instructions(Callee)) {
+      BasicBlock *BB = I.getParent();
+      if (!DeadBlocks.count(BB) && (isa<LoadInst>(&I) || isa<StoreInst>(&I)) ) LoadAndStores++;
     }
 
     std::set<unsigned> UsedArgumentsIndexes;
@@ -659,8 +656,11 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
       std::set<Value *> ExpandToUsers;
       for(User* U: arg->users())
       {
+        Instruction *I = dyn_cast<Instruction>(U);
+        bool isDeadBlock = (I && DeadBlocks.count(I->getParent()));
+
         StoreInst *SI = dyn_cast<StoreInst>(U);
-        if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+        if(!isDeadBlock && (isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg)) ) //the address operand must be the argument
         {
           Function* F = cast<Instruction>(U)->getFunction();
           if(F == Callee) {
@@ -677,8 +677,11 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
       for (Value *V : ExpandToUsers) {
         for(User* U: V->users())
         {
+          Instruction *I = dyn_cast<Instruction>(U);
+          bool isDeadBlock = (I && DeadBlocks.count(I->getParent()));
+
           StoreInst *SI = dyn_cast<StoreInst>(U);
-          if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+          if(!isDeadBlock && (isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg)) ) //the address operand must be the argument
           {
             Function* F = cast<Instruction>(U)->getFunction();
             if(F == Callee) {
@@ -742,7 +745,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     else if (NumVectorInstructions <= NumInstructions / 2)
       Threshold -= VectorBonus / 2;
 
-    if (Profitable(CandidateCall) && (IgnoreThreshold || Cost < std::max(1, Threshold)))
+    if ( (IgnoreThreshold || Cost < std::max(1, Threshold)) && Profitable(CandidateCall) )
       return InlineResult::success();
     return InlineResult::failure("Cost over threshold.");
   }
