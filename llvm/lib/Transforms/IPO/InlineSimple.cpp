@@ -91,6 +91,7 @@ INITIALIZE_PASS_DEPENDENCY(CallGraphWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(ProfileSummaryInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetTransformInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(TargetLibraryInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LCSSAWrapperPass)
 INITIALIZE_PASS_END(SimpleInliner, "inline", "Function Integration/Inlining",
                     false, false)
 

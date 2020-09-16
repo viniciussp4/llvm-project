@@ -48,6 +48,7 @@
 #include "llvm/Transforms/Utils/SimplifyIndVar.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Scalar/IndVarSimplify.h"
 #include "llvm/Analysis/MemorySSAUpdater.h"
 
@@ -2501,6 +2502,16 @@ static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
   return Modified;
 }
 
+/// Process all loops in the function, inner-most out.
+static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
+                                ScalarEvolution *SE) {
+  bool Changed = false;
+  for (auto &L : *LI)
+    Changed |= formLCSSARecursively(*L, DT, LI, SE);
+  return Changed;
+}
+
+
 Function* GetOptCallee(CallBase &CB, 
     TargetTransformInfo *CalleeTTI, 
     function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
@@ -2531,6 +2542,7 @@ Function* GetOptCallee(CallBase &CB,
 
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
+  
 
   bool modifiedFunction;
   do {
@@ -2547,18 +2559,38 @@ Function* GetOptCallee(CallBase &CB,
     }
 
   } while(modifiedFunction);
-  
+
   DominatorTree DT(*ClonedCallee);
   LoopInfo LI(DT);
+
 
   TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
   AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
   ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
   const DataLayout &DL = ClonedCallee->getParent()->getDataLayout();
+
+  formLCSSAOnAllLoops(&LI, DT, &SE);
+
   IndVarSimplify IVS(&LI, &SE, &DT, DL, &TLI, CalleeTTI, nullptr);
   for (Loop * L : LI.getLoopsInPreorder()) {
-    IVS.run(L);
+    if (L->isRecursivelyLCSSAForm(DT, LI))
+      IVS.run(L);
   }
+
+  do {
+    modifiedFunction = false;
+
+    if(SimplifyInstructions(*ClonedCallee)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
+      modifiedFunction = true;
+    }
+
+    if(SimplifyCFG(*ClonedCallee, CalleeTTI)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
+      modifiedFunction = true;
+    }
+
+  } while(modifiedFunction);
 
   errs() << "\nClonedCallee:\n";
   ClonedCallee->dump();
