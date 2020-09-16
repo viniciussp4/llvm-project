@@ -47,6 +47,7 @@
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/SimplifyIndVar.h"
 #include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Transforms/Utils/UnrollLoop.h"
 
 using namespace llvm;
 
@@ -2499,7 +2500,7 @@ static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
 }
 
 Function* GetOptCallee(CallBase &CB, 
-    TargetTransformInfo *CaleeTTI, 
+    TargetTransformInfo *CalleeTTI, 
     function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
     function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
 
@@ -2538,27 +2539,37 @@ Function* GetOptCallee(CallBase &CB,
       modifiedFunction = true;
     }
 
-    if(SimplifyCFG(*ClonedCallee, CaleeTTI)) {
+    if(SimplifyCFG(*ClonedCallee, CalleeTTI)) {
       errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
       modifiedFunction = true;
     }
 
-    DominatorTree DT(*ClonedCallee);
-    LoopInfo LI(DT);
+    // DominatorTree DT(*ClonedCallee);
+    // LoopInfo LI(DT);
 
-    TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
-    AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
-    ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
-    for (Loop * L : LI.getLoopsInPreorder()) {
-      SmallVector<WeakTrackingVH, 16> DeadInsts;
-      if(simplifyLoopIVs(L, &SE, &DT, &LI, CaleeTTI, DeadInsts)) {
-        errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyLoopIVs()\n";
-        modifiedFunction = true;
-      }
-    }
+    // TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
+    // AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
+    // ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
+    // for (Loop * L : LI.getLoopsInPreorder()) {
+    //   SmallVector<WeakTrackingVH, 16> DeadInsts;
+    //   if(simplifyLoopIVs(L, &SE, &DT, &LI, CalleeTTI, DeadInsts)) {
+    //     errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyLoopIVs()\n";
+    //     modifiedFunction = true;
+    //   }
+    // }
 
   } while(modifiedFunction);
   
+  DominatorTree DT(*ClonedCallee);
+  LoopInfo LI(DT);
+
+  TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
+  AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
+  ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
+  for (Loop * L : LI.getLoopsInPreorder()) {
+    simplifyLoopAfterUnroll(L, true, &LI, &SE, &DT, &AC, CalleeTTI);
+  }
+
   errs() << "\nClonedCallee:\n";
   ClonedCallee->dump();
   errs() << "\n";
