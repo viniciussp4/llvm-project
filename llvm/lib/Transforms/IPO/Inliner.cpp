@@ -76,9 +76,6 @@ using namespace llvm;
 
 #define DEBUG_TYPE "inline"
 
-bool ENABLE_FILTER_1 = true; // (IsDiscardable || !HasGlobalValue)
-bool ENABLE_FILTER_2 = true; // Analyze function call arguments, searching for global variables
-
 STATISTIC(NumInlined, "Number of functions inlined");
 STATISTIC(NumCallsDeleted, "Number of call sites deleted, not inlined");
 STATISTIC(NumDeleted, "Number of functions deleted because all callers found");
@@ -104,6 +101,73 @@ enum class InlinerFunctionImportStatsOpts {
 };
 
 } // end anonymous namespace
+
+class InliningData {
+public:
+  Function* Caller;
+  Function* Callee;
+
+  std::string CalleeName;
+  int CalleeBBs;
+  int CalleeInsts;
+
+  std::string CallerName;
+  bool Filtered;
+  std::string Filename;
+  unsigned occurences;
+  
+  std::string sanitizeFunctionName(StringRef FName) {
+    std::string StrFName = FName.str();
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'), StrFName.end());
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'), StrFName.end());
+    return StrFName;
+  }
+
+  InliningData(Function* Callee, Function* Caller, bool Filtered = false) {
+    this->Callee = Callee;
+    this->Caller = Caller;
+
+    this->CalleeName = this->sanitizeFunctionName(Callee->getName());
+    this->CalleeBBs = Callee->getBasicBlockList().size();
+    this->CalleeInsts = Callee->getInstructionCount();
+
+    this->CallerName = this->sanitizeFunctionName(Caller->getName());
+
+    this->Filename = Callee->getParent()->getSourceFileName();
+    this->Filtered = Filtered;
+    this->occurences = 1;
+  }
+
+  std::string print() {
+    std::string str = this->Filtered ? "~> [Filtered Function]: " : "~> [Inlined Function]: ";
+    str += "|Callee:" + this->CalleeName + "|Caller:" + this->CallerName + "|CalleeBBs:" + std::to_string(this->CalleeBBs) + "|CalleeInsts:" + std::to_string(this->CalleeInsts) + "|Occurrences:" + std::to_string(this->occurences) + "|Filename:" + this->Filename;
+    return "\n" + str + "\n";
+  }
+
+  bool isEqual(InliningData ID) {
+    return this->Callee == ID.Callee && this->Caller == ID.Caller;
+  }
+};
+
+class InliningDataVector {
+public:
+  std::vector<InliningData> vector;
+  void AddInlining(Function* Callee, Function* Caller, bool Filtered = false) {
+    InliningData newID = InliningData(Callee, Caller, Filtered);
+    InliningData* existingID = nullptr;
+    for (unsigned i = 0; i < this->vector.size(); i++) {
+      if(newID.isEqual(vector[i])) {
+        existingID = &vector[i];
+        break;
+      }
+    }
+
+    if(existingID)
+      existingID->occurences++;
+    else
+      this->vector.push_back(newID);
+  }
+};
 
 static cl::opt<InlinerFunctionImportStatsOpts> InlinerFunctionImportStats(
     "inliner-function-import-stats",
@@ -309,114 +373,92 @@ bool LegacyInlinerBase::runOnSCC(CallGraphSCC &SCC) {
   return inlineCalls(SCC);
 }
 
-bool profitableFilter1(Function* Callee) 
-{
+bool Profitable(CallBase &CB) {
+  bool HasAlloca = false;
   bool IsDiscardable = true;
-  bool HasGlobalValue = false;
-  if(Callee) {
-    if (!Callee->isDiscardableIfUnused())
-    {
-      std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-      errs() << Str;
-      IsDiscardable = false;
-    } 
+  unsigned LoadAndStores = 0;
 
-    for (BasicBlock &BB : *Callee)
-    {
-      for (Instruction &I : BB) 
-      {
-        StoreInst* SI = dyn_cast<StoreInst>(&I);
-        LoadInst* LI = dyn_cast<LoadInst>(&I);
-        Value* PointerOperand = nullptr;
-
-        if(SI)
-          PointerOperand = SI->getPointerOperand();
-        else if(LI)
-          PointerOperand = LI->getPointerOperand();
-
-        if(PointerOperand) 
-        {
-          if(!isa<GlobalValue>(PointerOperand) && isa<GEPOperator>(PointerOperand)) 
-          {
-            GEPOperator* GEPI = cast<GEPOperator>(PointerOperand);
-            PointerOperand = GEPI->getPointerOperand();
-          }
-
-          if(isa<GlobalValue>(PointerOperand)) {
-            std::string IPrint;
-            llvm::raw_string_ostream rso(IPrint);
-            I.print(rso);
-
-            std::string Str = "\n~>[Profitable] Global Value: " + IPrint + " | " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-            errs() << Str;
-
-            HasGlobalValue = true;
-          }
-        }
-      }
-    }
-  }
-
-  return IsDiscardable || !HasGlobalValue;
-}
-
-bool profitableFilter2(CallBase &CB) 
-{
-  bool hasGlobalValue = false;
   Function *Caller = CB.getCaller();
   Function *Callee = CB.getCalledFunction();
-  
-  std::vector<unsigned> UsedArgumentsIndexes;
 
-  for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg) 
+  if (!Callee->isDiscardableIfUnused())
   {
+    std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+    errs() << Str;
+    IsDiscardable = false;
+  }
+
+  for (Instruction &I : instructions(Callee)) {
+    if (isa<LoadInst>(&I) || isa<StoreInst>(&I)) LoadAndStores++;
+  }
+
+  std::set<unsigned> UsedArgumentsIndexes;
+
+  for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg)
+  {
+    std::set<Value *> ExpandToUsers;
     for(User* U: arg->users())
-    { 
-      if(isa<StoreInst>(U) || isa<LoadInst>(U)) 
+    {
+      StoreInst *SI = dyn_cast<StoreInst>(U);
+      if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
       {
         Function* F = cast<Instruction>(U)->getFunction();
         if(F == Callee) {
           unsigned ArgIndex = arg->getArgNo();
-          UsedArgumentsIndexes.push_back(ArgIndex);
+          UsedArgumentsIndexes.insert(ArgIndex);
+        }
+      }
+
+      GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(U);
+      if (GEP) {
+        ExpandToUsers.insert(GEP);
+      }
+    }
+    for (Value *V : ExpandToUsers) {
+      for(User* U: V->users())
+      {
+        StoreInst *SI = dyn_cast<StoreInst>(U);
+        if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+        {
+          Function* F = cast<Instruction>(U)->getFunction();
+          if(F == Callee) {
+            unsigned ArgIndex = arg->getArgNo();
+            UsedArgumentsIndexes.insert(ArgIndex);
+          }
         }
       }
     }
   }
-
-  for(unsigned i = 0; i< UsedArgumentsIndexes.size(); i++) 
+  
+  for(unsigned ArgId : UsedArgumentsIndexes)
   {
-    Value* Operand = CB.getArgOperand(UsedArgumentsIndexes[i]);  
-    
-    if(!isa<GlobalValue>(Operand) && isa<GEPOperator>(Operand)) 
+    Value* Operand = CB.getArgOperand(ArgId);
+
+    if(isa<GetElementPtrInst>(Operand))
+    {
+      GetElementPtrInst *GEPI = cast<GetElementPtrInst>(Operand);
+      Operand = GEPI->getPointerOperand();
+    }
+    if(isa<GEPOperator>(Operand))
     {
       GEPOperator* GEPI = cast<GEPOperator>(Operand);
       Operand = GEPI->getPointerOperand();
     }
 
-    if(isa<GlobalValue>(Operand)) {
-      errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses Global Value '" << Operand->getName() << "' in the " << UsedArgumentsIndexes[i] << "th argument\n";
-      hasGlobalValue = true;
+    if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
+      errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+      HasAlloca = true;
     }
   }
 
-  return !hasGlobalValue;
+  return IsDiscardable || HasAlloca || LoadAndStores == 0;
 }
 
-bool Profitable(CallBase &CB) {
-  bool IsProfitable = true;
-  
-  if(ENABLE_FILTER_1)
-  {
-    Function *Callee = CB.getCalledFunction();
-    IsProfitable = IsProfitable && profitableFilter1(Callee);
-  }
-
-  if(ENABLE_FILTER_2)
-  {
-    IsProfitable = IsProfitable && profitableFilter2(CB);
-  }
-
-  return IsProfitable;
+std::string sanitizeFunctionName(StringRef FName) {
+  std::string StrFName = FName.str();
+  StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'), StrFName.end());
+  StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'), StrFName.end());
+  return StrFName;
 }
 
 static bool
@@ -503,13 +545,14 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
 
   // Now that we have all of the call sites, loop over them and inline them if
   // it looks profitable to do so.
-  std::map<Function*, std::string > CalleeFunctionName;
-  std::map<Function*, unsigned > CalleeBBs;
-  std::map<Function*, unsigned > CalleeInstructions;
-  std::map<Function*, unsigned > CalleeInlinings;
-  std::map<Function*, StringRef > CalleeFilenames;
+  // std::map<Function*, std::string > CalleeFunctionName;
+  // std::map<Function*, unsigned > CalleeBBs;
+  // std::map<Function*, unsigned > CalleeInstructions;
+  // std::map<Function*, unsigned > CalleeInlinings;
+  // std::map<Function*, StringRef > CalleeFilenames;
   bool Changed = false;
   bool LocalChange;
+  InliningDataVector IDV = InliningDataVector();
   do {
     LocalChange = false;
     // Iterate over the outer loop because inlining functions can cause indirect
@@ -570,8 +613,11 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         BasicBlock *Block = CB.getParent();
 
         // Custom profitable
-        if (!Profitable(CB))
-          continue;
+        // if (!Profitable(CB))
+        // {
+        //   IDV.AddInlining(Callee, Caller, true);
+        //   continue;
+        // }
 
         // Attempt to inline the function.
         using namespace ore;
@@ -592,25 +638,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
           continue;
         }
 
-        // Coletar estatísticas do Callee
-        std::string CalleeName = Callee->getName().str();
-        CalleeName.erase(std::remove(CalleeName.begin(), CalleeName.end(), '\n'), CalleeName.end());
-        CalleeName.erase(std::remove(CalleeName.begin(), CalleeName.end(), '\r'), CalleeName.end());
-        CalleeFunctionName[Callee] = CalleeName;
-        
-        if(!CalleeInlinings.count(Callee)) 
-          CalleeInlinings[Callee] = 0;
-        CalleeInlinings[Callee]++;
-        
-        if(!CalleeBBs.count(Callee)) 
-          CalleeBBs[Callee] = Callee->getBasicBlockList().size();
-        
-        if(!CalleeInstructions.count(Callee)) 
-          CalleeInstructions[Callee] = Callee->getInstructionCount();
-        
-        if(!CalleeFilenames.count(Callee)) 
-          CalleeFilenames[Callee] = Callee->getParent()->getSourceFileName();
-        //        
+        IDV.AddInlining(Callee, Caller);
 
         ++NumInlined;
 
@@ -682,16 +710,9 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
     }
   } while (LocalChange);
 
-  for ( auto calleeMap = CalleeFunctionName.begin(); calleeMap != CalleeFunctionName.end(); ++calleeMap  )
+  for (unsigned i = 0; i < IDV.vector.size(); i++) 
   {
-    Function* F = calleeMap->first;
-    StringRef functionName = calleeMap->second;
-    unsigned BBs = CalleeBBs[F];
-    unsigned Insts = CalleeInstructions[F];
-    unsigned Inlinings = CalleeInlinings[F];
-    StringRef Filename = CalleeFilenames[F];
-
-    errs() << "~> Inlined Function: |Function:" << F << "|Name:" << functionName << "|BBs:" << BBs << "|Insts:" << Insts << "|Inlinings:" << Inlinings << "|Filename:" << Filename << "\n";
+    errs() << IDV.vector[i].print();
   } 
 
   return Changed;
