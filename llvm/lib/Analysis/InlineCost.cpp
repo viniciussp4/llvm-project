@@ -45,6 +45,8 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/SimplifyIndVar.h"
+#include "llvm/Analysis/ScalarEvolution.h"
 
 using namespace llvm;
 
@@ -637,7 +639,6 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     unsigned LoadAndStores = 0;
 
     Function *Caller = CB.getCaller();
-    // Function *Callee = GetOptCallee(CB);
     Function *Callee = CB.getCalledFunction();
 
     if (!Callee->isDiscardableIfUnused())
@@ -2497,7 +2498,11 @@ static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
   return Modified;
 }
 
-Function* GetOptCallee(CallBase &CB, TargetTransformInfo *CaleeTTI) {
+Function* GetOptCallee(CallBase &CB, 
+    TargetTransformInfo *CaleeTTI, 
+    function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
+    function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
+
   Function *Caller = CB.getCaller();
   Function *Callee = CB.getCalledFunction();
   std::map<unsigned, Constant*> ConstantArguments;
@@ -2534,9 +2539,24 @@ Function* GetOptCallee(CallBase &CB, TargetTransformInfo *CaleeTTI) {
     }
 
     if(SimplifyCFG(*ClonedCallee, CaleeTTI)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyCFG()\n";
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
       modifiedFunction = true;
     }
+
+    DominatorTree DT(*ClonedCallee);
+    LoopInfo LI(DT);
+
+    TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
+    AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
+    ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
+    for (Loop * L : LI.getLoopsInPreorder()) {
+      SmallVector<WeakTrackingVH, 16> DeadInsts;
+      if(simplifyLoopIVs(L, &SE, &DT, &LI, CaleeTTI, DeadInsts)) {
+        errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyLoopIVs()\n";
+        modifiedFunction = true;
+      }
+    }
+
   } while(modifiedFunction);
   
   errs() << "\nClonedCallee:\n";
@@ -2567,7 +2587,8 @@ InlineCost llvm::getInlineCost(
                           << "... (caller:" << Call.getCaller()->getName()
                           << ")\n");
 
-  Function* OptCallee = GetOptCallee(Call, &CalleeTTI);
+
+  Function* OptCallee = GetOptCallee(Call, &CalleeTTI, GetTLI, GetAssumptionCache);
   InlineCostCallAnalyzer CA(*OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
   InlineResult ShouldInline = CA.analyze();
