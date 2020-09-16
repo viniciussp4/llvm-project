@@ -2473,10 +2473,38 @@ Optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return None;
 }
 
-Function* GetOptCallee(CallBase &CB) {
+static bool SimplifyInstructions(Function &F) {
+  bool Modified = false;
+  for (BasicBlock &BB : F) {
+    if(SimplifyInstructionsInBlock(&BB)) {
+      Modified = true;
+    }
+  }
+
+  return Modified;
+}
+
+static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
+  bool Modified = false;
+  std::list<BasicBlock*> BBs;
+  for (BasicBlock &BB : F) BBs.push_back(&BB);
+  for (BasicBlock *BB : BBs) {
+    if(simplifyCFG(BB, *TTI)) {
+      Modified = true;
+    }
+  }
+
+  return Modified;
+}
+
+Function* GetOptCallee(CallBase &CB, TargetTransformInfo *CaleeTTI) {
   Function *Caller = CB.getCaller();
   Function *Callee = CB.getCalledFunction();
   std::map<unsigned, Constant*> ConstantArguments;
+
+  errs() << "\nCallee original:\n";
+  Callee->dump();
+  errs() << "\n";
   
   ValueToValueMapTy VMap;
   Function* ClonedCallee = CloneFunction(Callee, VMap);
@@ -2496,16 +2524,17 @@ Function* GetOptCallee(CallBase &CB) {
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
 
-  for (BasicBlock &BB : *ClonedCallee) {
-    if(SimplifyInstructionsInBlock(&BB)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
-    }
-
-    // TargetTransformInfo* TTI;
-    // if(simplifyCFG(&BB, TTI)) {
-    //   errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyCFG()\n";
-    // }
+  if(SimplifyInstructions(*ClonedCallee)) {
+    errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
   }
+
+  if(SimplifyCFG(*ClonedCallee, CaleeTTI)) {
+    errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyCFG()\n";
+  }
+  
+  errs() << "\nClonedCallee:\n";
+  ClonedCallee->dump();
+  errs() << "\n";
 
   return ClonedCallee;
 }
@@ -2531,10 +2560,11 @@ InlineCost llvm::getInlineCost(
                           << "... (caller:" << Call.getCaller()->getName()
                           << ")\n");
 
-  Function* OptCallee = GetOptCallee(Call);
+  Function* OptCallee = GetOptCallee(Call, &CalleeTTI);
   InlineCostCallAnalyzer CA(*OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
   InlineResult ShouldInline = CA.analyze();
+  OptCallee->eraseFromParent();
 
   LLVM_DEBUG(CA.dump());
 
