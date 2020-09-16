@@ -49,6 +49,9 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 #include "llvm/Transforms/Scalar/IndVarSimplify.h"
+#include "llvm/Analysis/MemorySSAUpdater.h"
+
+using namespace llvm;
 
 namespace {
 
@@ -96,8 +99,6 @@ public:
 };
 
 } // end anonymous namespace
-
-using namespace llvm;
 
 #define DEBUG_TYPE "inline-cost"
 
@@ -2600,9 +2601,10 @@ Function* GetOptCallee(CallBase &CB,
   TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
   AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
   ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
+  const DataLayout &DL = ClonedCallee->getParent()->getDataLayout();
+  IndVarSimplify IVS(&LI, &SE, &DT, DL, &TLI, CalleeTTI, nullptr);
   for (Loop * L : LI.getLoopsInPreorder()) {
-    const DataLayout &DL = L->getHeader()->getModule()->getDataLayout();
-    // IndVarSimplify IVS(LI, SE, DT, DL, TLI, CalleeTTI, nullptr);
+    IVS.run(L);
   }
 
   errs() << "\nClonedCallee:\n";
