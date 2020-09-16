@@ -2524,13 +2524,20 @@ Function* GetOptCallee(CallBase &CB, TargetTransformInfo *CaleeTTI) {
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
 
-  if(SimplifyInstructions(*ClonedCallee)) {
-    errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
-  }
+  bool modifiedFunction;
+  do {
+    modifiedFunction = false;
 
-  if(SimplifyCFG(*ClonedCallee, CaleeTTI)) {
-    errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyCFG()\n";
-  }
+    if(SimplifyInstructions(*ClonedCallee)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
+      modifiedFunction = true;
+    }
+
+    if(SimplifyCFG(*ClonedCallee, CaleeTTI)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyCFG()\n";
+      modifiedFunction = true;
+    }
+  } while(modifiedFunction);
   
   errs() << "\nClonedCallee:\n";
   ClonedCallee->dump();
