@@ -43,6 +43,8 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/Local.h"
 
 using namespace llvm;
 
@@ -635,6 +637,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     unsigned LoadAndStores = 0;
 
     Function *Caller = CB.getCaller();
+    // Function *Callee = GetOptCallee(CB);
     Function *Callee = CB.getCalledFunction();
 
     if (!Callee->isDiscardableIfUnused())
@@ -642,7 +645,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
       std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
       errs() << Str;
       IsDiscardable = false;
-    }
+    } 
 
     for (Instruction &I : instructions(Callee)) {
       BasicBlock *BB = I.getParent();
@@ -2470,6 +2473,43 @@ Optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return None;
 }
 
+Function* GetOptCallee(CallBase &CB) {
+  Function *Caller = CB.getCaller();
+  Function *Callee = CB.getCalledFunction();
+  std::map<unsigned, Constant*> ConstantArguments;
+  
+  ValueToValueMapTy VMap;
+  Function* ClonedCallee = CloneFunction(Callee, VMap);
+
+  for(unsigned i = 0; i < CB.getNumArgOperands(); i++) {
+    Constant* c = dyn_cast<Constant>(CB.getArgOperand(i));
+    if(c) {
+      errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a constant. | " << Callee->getParent()->getSourceFileName() << "\n";
+      ConstantArguments[i] = c;
+    }
+  }
+
+  for(auto &ConstantArgument : ConstantArguments) {
+    unsigned argIndex = ConstantArgument.first;
+    Constant* argument = ConstantArgument.second;
+
+    ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
+  }
+
+  for (BasicBlock &BB : *ClonedCallee) {
+    if(SimplifyInstructionsInBlock(&BB)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
+    }
+
+    // TargetTransformInfo* TTI;
+    // if(simplifyCFG(&BB, TTI)) {
+    //   errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using simplifyCFG()\n";
+    // }
+  }
+
+  return ClonedCallee;
+}
+
 InlineCost llvm::getInlineCost(
     CallBase &Call, Function *Callee, const InlineParams &Params,
     TargetTransformInfo &CalleeTTI,
@@ -2491,7 +2531,8 @@ InlineCost llvm::getInlineCost(
                           << "... (caller:" << Call.getCaller()->getName()
                           << ")\n");
 
-  InlineCostCallAnalyzer CA(*Callee, Call, Params, CalleeTTI,
+  Function* OptCallee = GetOptCallee(Call);
+  InlineCostCallAnalyzer CA(*OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
   InlineResult ShouldInline = CA.analyze();
 
