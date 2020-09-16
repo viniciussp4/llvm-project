@@ -22,6 +22,7 @@
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -42,6 +43,59 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/Cloning.h"
+#include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/SimplifyIndVar.h"
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Transforms/Utils/UnrollLoop.h"
+#include "llvm/Transforms/Scalar/IndVarSimplify.h"
+
+namespace {
+
+struct RewritePhi;
+
+class IndVarSimplify {
+  LoopInfo *LI;
+  ScalarEvolution *SE;
+  DominatorTree *DT;
+  const DataLayout &DL;
+  TargetLibraryInfo *TLI;
+  const TargetTransformInfo *TTI;
+  std::unique_ptr<MemorySSAUpdater> MSSAU;
+
+  SmallVector<WeakTrackingVH, 16> DeadInsts;
+
+  bool handleFloatingPointIV(Loop *L, PHINode *PH);
+  bool rewriteNonIntegerIVs(Loop *L);
+
+  bool simplifyAndExtend(Loop *L, SCEVExpander &Rewriter, LoopInfo *LI);
+  /// Try to eliminate loop exits based on analyzeable exit counts
+  bool optimizeLoopExits(Loop *L, SCEVExpander &Rewriter);
+  /// Try to form loop invariant tests for loop exits by changing how many
+  /// iterations of the loop run when that is unobservable.
+  bool predicateLoopExits(Loop *L, SCEVExpander &Rewriter);
+
+  bool rewriteFirstIterationLoopExitValues(Loop *L);
+
+  bool linearFunctionTestReplace(Loop *L, BasicBlock *ExitingBB,
+                                 const SCEV *ExitCount,
+                                 PHINode *IndVar, SCEVExpander &Rewriter);
+
+  bool sinkUnusedInvariants(Loop *L);
+
+public:
+  IndVarSimplify(LoopInfo *LI, ScalarEvolution *SE, DominatorTree *DT,
+                 const DataLayout &DL, TargetLibraryInfo *TLI,
+                 TargetTransformInfo *TTI, MemorySSA *MSSA)
+      : LI(LI), SE(SE), DT(DT), DL(DL), TLI(TLI), TTI(TTI) {
+    if (MSSA)
+      MSSAU = std::make_unique<MemorySSAUpdater>(MSSA);
+  }
+
+  bool run(Loop *L);
+};
+
+} // end anonymous namespace
 
 using namespace llvm;
 
@@ -628,6 +682,94 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     InstructionCostDetailMap[I].ThresholdAfter = Threshold;
   }
 
+  bool Profitable(CallBase &CB) {
+    bool HasAlloca = false;
+    bool IsDiscardable = true;
+    unsigned LoadAndStores = 0;
+
+    Function *Caller = CB.getCaller();
+    Function *Callee = CB.getCalledFunction();
+
+    if (!Callee->isDiscardableIfUnused())
+    {
+      std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+      errs() << Str;
+      IsDiscardable = false;
+    } 
+
+    for (Instruction &I : instructions(Callee)) {
+      BasicBlock *BB = I.getParent();
+      if (!DeadBlocks.count(BB) && (isa<LoadInst>(&I) || isa<StoreInst>(&I)) ) LoadAndStores++;
+    }
+
+    std::set<unsigned> UsedArgumentsIndexes;
+
+    for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg)
+    {
+      std::set<Value *> ExpandToUsers;
+      for(User* U: arg->users())
+      {
+        Instruction *I = dyn_cast<Instruction>(U);
+        bool isDeadBlock = (I && DeadBlocks.count(I->getParent()));
+
+        StoreInst *SI = dyn_cast<StoreInst>(U);
+        if(!isDeadBlock && (isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg)) ) //the address operand must be the argument
+        {
+          Function* F = cast<Instruction>(U)->getFunction();
+          if(F == Callee) {
+            unsigned ArgIndex = arg->getArgNo();
+            UsedArgumentsIndexes.insert(ArgIndex);
+          }
+        }
+
+        GetElementPtrInst *GEP = dyn_cast<GetElementPtrInst>(U);
+        if (GEP) {
+          ExpandToUsers.insert(GEP);
+        }
+      }
+      for (Value *V : ExpandToUsers) {
+        for(User* U: V->users())
+        {
+          Instruction *I = dyn_cast<Instruction>(U);
+          bool isDeadBlock = (I && DeadBlocks.count(I->getParent()));
+
+          StoreInst *SI = dyn_cast<StoreInst>(U);
+          if(!isDeadBlock && (isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg)) ) //the address operand must be the argument
+          {
+            Function* F = cast<Instruction>(U)->getFunction();
+            if(F == Callee) {
+              unsigned ArgIndex = arg->getArgNo();
+              UsedArgumentsIndexes.insert(ArgIndex);
+            }
+          }
+        }
+      }
+    }
+    
+    for(unsigned ArgId : UsedArgumentsIndexes)
+    {
+      Value* Operand = CB.getArgOperand(ArgId);
+
+      if(isa<GetElementPtrInst>(Operand))
+      {
+        GetElementPtrInst *GEPI = cast<GetElementPtrInst>(Operand);
+        Operand = GEPI->getPointerOperand();
+      }
+      if(isa<GEPOperator>(Operand))
+      {
+        GEPOperator* GEPI = cast<GEPOperator>(Operand);
+        Operand = GEPI->getPointerOperand();
+      }
+
+      if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
+        errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+        HasAlloca = true;
+      }
+    }
+
+    return IsDiscardable || HasAlloca || LoadAndStores == 0;
+  }
+
   InlineResult finalizeAnalysis() override {
     // Loops generally act a lot like calls in that they act like barriers to
     // movement, require a certain amount of setup, etc. So when optimising for
@@ -656,7 +798,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     else if (NumVectorInstructions <= NumInstructions / 2)
       Threshold -= VectorBonus / 2;
 
-    if (IgnoreThreshold || Cost < std::max(1, Threshold))
+    if ( (IgnoreThreshold || Cost < std::max(1, Threshold)) && Profitable(CandidateCall) )
       return InlineResult::success();
     return InlineResult::failure("Cost over threshold.");
   }
@@ -2381,6 +2523,95 @@ Optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return None;
 }
 
+static bool SimplifyInstructions(Function &F) {
+  bool Modified = false;
+  for (BasicBlock &BB : F) {
+    if(SimplifyInstructionsInBlock(&BB)) {
+      Modified = true;
+    }
+  }
+
+  return Modified;
+}
+
+static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
+  bool Modified = false;
+  std::list<BasicBlock*> BBs;
+  for (BasicBlock &BB : F) BBs.push_back(&BB);
+  for (BasicBlock *BB : BBs) {
+    if(simplifyCFG(BB, *TTI)) {
+      Modified = true;
+    }
+  }
+
+  return Modified;
+}
+
+Function* GetOptCallee(CallBase &CB, 
+    TargetTransformInfo *CalleeTTI, 
+    function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
+    function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
+
+  Function *Caller = CB.getCaller();
+  Function *Callee = CB.getCalledFunction();
+  std::map<unsigned, Constant*> ConstantArguments;
+
+  errs() << "\nCallee original:\n";
+  Callee->dump();
+  errs() << "\n";
+  
+  ValueToValueMapTy VMap;
+  Function* ClonedCallee = CloneFunction(Callee, VMap);
+
+  for(unsigned i = 0; i < CB.getNumArgOperands(); i++) {
+    Constant* c = dyn_cast<Constant>(CB.getArgOperand(i));
+    if(c) {
+      errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a constant. | " << Callee->getParent()->getSourceFileName() << "\n";
+      ConstantArguments[i] = c;
+    }
+  }
+
+  for(auto &ConstantArgument : ConstantArguments) {
+    unsigned argIndex = ConstantArgument.first;
+    Constant* argument = ConstantArgument.second;
+
+    ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
+  }
+
+  bool modifiedFunction;
+  do {
+    modifiedFunction = false;
+
+    if(SimplifyInstructions(*ClonedCallee)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
+      modifiedFunction = true;
+    }
+
+    if(SimplifyCFG(*ClonedCallee, CalleeTTI)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
+      modifiedFunction = true;
+    }
+
+  } while(modifiedFunction);
+  
+  DominatorTree DT(*ClonedCallee);
+  LoopInfo LI(DT);
+
+  TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
+  AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
+  ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
+  for (Loop * L : LI.getLoopsInPreorder()) {
+    const DataLayout &DL = L->getHeader()->getModule()->getDataLayout();
+    // IndVarSimplify IVS(LI, SE, DT, DL, TLI, CalleeTTI, nullptr);
+  }
+
+  errs() << "\nClonedCallee:\n";
+  ClonedCallee->dump();
+  errs() << "\n";
+
+  return ClonedCallee;
+}
+
 InlineCost llvm::getInlineCost(
     CallBase &Call, Function *Callee, const InlineParams &Params,
     TargetTransformInfo &CalleeTTI,
@@ -2402,9 +2633,12 @@ InlineCost llvm::getInlineCost(
                           << "... (caller:" << Call.getCaller()->getName()
                           << ")\n");
 
-  InlineCostCallAnalyzer CA(*Callee, Call, Params, CalleeTTI,
+
+  Function* OptCallee = GetOptCallee(Call, &CalleeTTI, GetTLI, GetAssumptionCache);
+  InlineCostCallAnalyzer CA(*OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
   InlineResult ShouldInline = CA.analyze();
+  OptCallee->eraseFromParent();
 
   LLVM_DEBUG(CA.dump());
 
