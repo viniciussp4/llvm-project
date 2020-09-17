@@ -177,8 +177,11 @@ protected:
   /// Profile summary information.
   ProfileSummaryInfo *PSI;
 
-  /// The called function.
+  /// The called function (actually, the optimized one).
   Function &F;
+
+  /// The called function (now, it's the original).
+  Function *OriginalCallee;
 
   // Cache the DataLayout since we use it a lot.
   const DataLayout &DL;
@@ -408,10 +411,10 @@ public:
       function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
       function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
       ProfileSummaryInfo *PSI = nullptr,
-      OptimizationRemarkEmitter *ORE = nullptr)
+      OptimizationRemarkEmitter *ORE = nullptr, Function *OriginalCallee = nullptr)
       : TTI(TTI), GetAssumptionCache(GetAssumptionCache), GetBFI(GetBFI),
         PSI(PSI), F(Callee), DL(F.getParent()->getDataLayout()), ORE(ORE),
-        CandidateCall(Call), EnableLoadElimination(true) {}
+        CandidateCall(Call), EnableLoadElimination(true), OriginalCallee(OriginalCallee) {}
 
   InlineResult analyze();
 
@@ -637,13 +640,13 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     InstructionCostDetailMap[I].ThresholdAfter = Threshold;
   }
 
-  bool Profitable(CallBase &CB) {
+  bool Profitable() {
     bool HasAlloca = false;
     bool IsDiscardable = true;
     unsigned LoadAndStores = 0;
 
-    Function *Caller = CB.getCaller();
-    Function *Callee = CB.getCalledFunction();
+    Function *Caller = CandidateCall.getCaller();
+    Function *Callee = &F; //It's the optimized Callee, inherited from CallAnalyzer, in case of questions check the InlineCostCallAnalyzer constructor
 
     if (!Callee->isDiscardableIfUnused())
     {
@@ -703,7 +706,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     
     for(unsigned ArgId : UsedArgumentsIndexes)
     {
-      Value* Operand = CB.getArgOperand(ArgId);
+      Value* Operand = CandidateCall.getArgOperand(ArgId);
 
       if(isa<GetElementPtrInst>(Operand))
       {
@@ -753,7 +756,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     else if (NumVectorInstructions <= NumInstructions / 2)
       Threshold -= VectorBonus / 2;
 
-    if ( (IgnoreThreshold || Cost < std::max(1, Threshold)) && Profitable(CandidateCall) )
+    if ( (IgnoreThreshold || Cost < std::max(1, Threshold)) && Profitable() )
       return InlineResult::success();
     return InlineResult::failure("Cost over threshold.");
   }
@@ -820,8 +823,8 @@ public:
       function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
       ProfileSummaryInfo *PSI = nullptr,
       OptimizationRemarkEmitter *ORE = nullptr, bool BoostIndirect = true,
-      bool IgnoreThreshold = false)
-      : CallAnalyzer(Callee, Call, TTI, GetAssumptionCache, GetBFI, PSI, ORE),
+      bool IgnoreThreshold = false, Function *OriginalCallee = nullptr)
+      : CallAnalyzer(Callee, Call, TTI, GetAssumptionCache, GetBFI, PSI, ORE, OriginalCallee),
         ComputeFullInlineCost(OptComputeFullInlineCost ||
                               Params.ComputeFullInlineCost || ORE),
         Params(Params), Threshold(Params.DefaultThreshold),
@@ -2295,8 +2298,14 @@ InlineResult CallAnalyzer::analyze() {
     onBlockAnalyzed(BB);
   }
 
-  bool OnlyOneCallAndLocalLinkage = F.hasLocalLinkage() && F.hasOneUse() &&
-                                    &F == CandidateCall.getCalledFunction();
+  Function *ActualCallee;
+  if(OriginalCallee)
+    ActualCallee = OriginalCallee;
+  else
+    ActualCallee = &F;
+
+  bool OnlyOneCallAndLocalLinkage = ActualCallee->hasLocalLinkage() && ActualCallee->hasOneUse() &&
+                                    ActualCallee == CandidateCall.getCalledFunction();
   // If this is a noduplicate call, we can still inline as long as
   // inlining this would cause the removal of the caller (so the instruction
   // is not actually duplicated, just moved).
@@ -2521,9 +2530,9 @@ Function* GetOptCallee(CallBase &CB,
   Function *Callee = CB.getCalledFunction();
   std::map<unsigned, Constant*> ConstantArguments;
 
-  errs() << "\nCallee original:\n";
-  Callee->dump();
-  errs() << "\n";
+  // errs() << "\nCallee original:\n";
+  // Callee->dump();
+  // errs() << "\n";
   
   ValueToValueMapTy VMap;
   Function* ClonedCallee = CloneFunction(Callee, VMap);
@@ -2592,9 +2601,9 @@ Function* GetOptCallee(CallBase &CB,
 
   } while(modifiedFunction);
 
-  errs() << "\nClonedCallee:\n";
-  ClonedCallee->dump();
-  errs() << "\n";
+  // errs() << "\nClonedCallee:\n";
+  // ClonedCallee->dump();
+  // errs() << "\n";
 
   return ClonedCallee;
 }
@@ -2622,8 +2631,10 @@ InlineCost llvm::getInlineCost(
 
 
   Function* OptCallee = GetOptCallee(Call, &CalleeTTI, GetTLI, GetAssumptionCache);
-  InlineCostCallAnalyzer CA(*OptCallee, Call, Params, CalleeTTI,
-                            GetAssumptionCache, GetBFI, PSI, ORE);
+  InlineCostCallAnalyzer CA (*OptCallee, Call, Params, CalleeTTI,
+                            GetAssumptionCache, GetBFI, PSI, ORE, 
+                            Callee);
+
   InlineResult ShouldInline = CA.analyze();
   OptCallee->eraseFromParent();
 
