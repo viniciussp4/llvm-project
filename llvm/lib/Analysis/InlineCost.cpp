@@ -767,7 +767,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     else if (NumVectorInstructions <= NumInstructions / 2)
       Threshold -= VectorBonus / 2;
 
-    if ( (IgnoreThreshold || Cost < std::max(1, Threshold)) && Profitable() )
+    if ( (IgnoreThreshold || Cost < std::max(1, Threshold)) /*&& Profitable()*/ )
       return InlineResult::success();
     return InlineResult::failure("Cost over threshold.");
   }
@@ -2532,7 +2532,7 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
     function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
 
   Function *Caller = CB.getCaller();
-  std::map<unsigned, Constant*> ConstantArguments;
+  std::map<unsigned, Value*> ConstantArguments;
 
   // errs() << "\nCallee original:\n";
   // Callee->dump();
@@ -2543,15 +2543,19 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
 
   for(unsigned i = 0; i < CB.getNumArgOperands(); i++) {
     Constant* c = dyn_cast<Constant>(CB.getArgOperand(i));
+    GlobalValue* gv = dyn_cast<GlobalValue>(CB.getArgOperand(i));
     if(c) {
       errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a constant. | " << Callee->getParent()->getSourceFileName() << "\n";
       ConstantArguments[i] = c;
+    } else if (gv) {
+      errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a Global Value. | " << Callee->getParent()->getSourceFileName() << "\n";
+      ConstantArguments[i] = gv;
     }
   }
 
   for(auto &ConstantArgument : ConstantArguments) {
     unsigned argIndex = ConstantArgument.first;
-    Constant* argument = ConstantArgument.second;
+    Value* argument = ConstantArgument.second;
 
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
@@ -2637,8 +2641,6 @@ InlineCost llvm::getInlineCost(
   Function* OptCallee = GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
   InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
-  // InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
-  //                           GetAssumptionCache, GetBFI, PSI, ORE);
 
   InlineResult ShouldInline = CA.analyze();
   OptCallee->eraseFromParent();
