@@ -177,11 +177,10 @@ protected:
   /// Profile summary information.
   ProfileSummaryInfo *PSI;
 
-  /// The called function (actually, the optimized one).
-  Function &F;
+  /// The called function and a post-inlined clone.
+  Function &OriginalCallee;
+  Function &SimplifiedCallee;
 
-  /// The called function (now, it's the original).
-  Function *OriginalCallee;
 
   // Cache the DataLayout since we use it a lot.
   const DataLayout &DL;
@@ -407,14 +406,14 @@ protected:
 
 public:
   CallAnalyzer(
-      Function &Callee, CallBase &Call, const TargetTransformInfo &TTI,
+      Function &Callee, Function &OptCallee, CallBase &Call, const TargetTransformInfo &TTI,
       function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
       function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
       ProfileSummaryInfo *PSI = nullptr,
       OptimizationRemarkEmitter *ORE = nullptr, Function *OriginalCallee = nullptr)
       : TTI(TTI), GetAssumptionCache(GetAssumptionCache), GetBFI(GetBFI),
-        PSI(PSI), F(Callee), DL(F.getParent()->getDataLayout()), ORE(ORE),
-        CandidateCall(Call), EnableLoadElimination(true), OriginalCallee(OriginalCallee) {}
+        PSI(PSI), OriginalCallee(Callee), SimplifiedCallee(OptCallee), DL(Callee.getParent()->getDataLayout()), ORE(ORE),
+        CandidateCall(Call), EnableLoadElimination(true) {}
 
   InlineResult analyze();
 
@@ -540,7 +539,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
           InlineConstants::IndirectCallThreshold;
       /// FIXME: if InlineCostCallAnalyzer is derived from, this may need
       /// to instantiate the derived class.
-      InlineCostCallAnalyzer CA(*F, Call, IndirectCallParams, TTI,
+      InlineCostCallAnalyzer CA(*F, *F, Call, IndirectCallParams, TTI,
                                 GetAssumptionCache, GetBFI, PSI, ORE, false);
       if (CA.analyze().isSuccess()) {
         // We were able to inline the indirect call! Subtract the cost from the
@@ -646,7 +645,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     unsigned LoadAndStores = 0;
 
     Function *Caller = CandidateCall.getCaller();
-    Function *Callee = &F; //It's the optimized Callee, inherited from CallAnalyzer, in case of questions check the InlineCostCallAnalyzer constructor
+    Function *Callee = &SimplifiedCallee; //It's the optimized Callee, inherited from CallAnalyzer, in case of questions check the InlineCostCallAnalyzer constructor
 
     if (!Callee->isDiscardableIfUnused())
     {
@@ -736,7 +735,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     // functions (and hence DT and LI will hopefully be cheap).
     auto *Caller = CandidateCall.getFunction();
     if (Caller->hasMinSize()) {
-      DominatorTree DT(F);
+      DominatorTree DT(SimplifiedCallee);
       LoopInfo LI(DT);
       int NumLoops = 0;
       for (Loop *L : LI) {
@@ -785,7 +784,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     assert(NumVectorInstructions == 0);
 
     // Update the threshold based on callsite properties
-    updateThreshold(CandidateCall, F);
+    updateThreshold(CandidateCall, OriginalCallee);
 
     // While Threshold depends on commandline options that can take negative
     // values, we want to enforce the invariant that the computed threshold and
@@ -805,7 +804,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
 
     // If this function uses the coldcc calling convention, prefer not to inline
     // it.
-    if (F.getCallingConv() == CallingConv::Cold)
+    if (OriginalCallee.getCallingConv() == CallingConv::Cold)
       Cost += InlineConstants::ColdccPenalty;
 
     // Check if we're done. This can happen due to bonuses and penalties.
@@ -817,14 +816,14 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
 
 public:
   InlineCostCallAnalyzer(
-      Function &Callee, CallBase &Call, const InlineParams &Params,
+      Function &Callee, Function &OptCallee, CallBase &Call, const InlineParams &Params,
       const TargetTransformInfo &TTI,
       function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
       function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
       ProfileSummaryInfo *PSI = nullptr,
       OptimizationRemarkEmitter *ORE = nullptr, bool BoostIndirect = true,
       bool IgnoreThreshold = false, Function *OriginalCallee = nullptr)
-      : CallAnalyzer(Callee, Call, TTI, GetAssumptionCache, GetBFI, PSI, ORE, OriginalCallee),
+      : CallAnalyzer(Callee, OptCallee, Call, TTI, GetAssumptionCache, GetBFI, PSI, ORE, OriginalCallee),
         ComputeFullInlineCost(OptComputeFullInlineCost ||
                               Params.ComputeFullInlineCost || ORE),
         Params(Params), Threshold(Params.DefaultThreshold),
@@ -1508,7 +1507,7 @@ void InlineCostCallAnalyzer::updateThreshold(CallBase &Call, Function &Callee) {
   VectorBonus = Threshold * VectorBonusPercent / 100;
 
   bool OnlyOneCallAndLocalLinkage =
-      F.hasLocalLinkage() && F.hasOneUse() && &F == Call.getCalledFunction();
+      OriginalCallee.hasLocalLinkage() && OriginalCallee.hasOneUse() && &OriginalCallee == Call.getCalledFunction();
   // If there is only one call of the function, and it has internal linkage,
   // the cost of inlining it drops dramatically. It may seem odd to update
   // Cost in updateThreshold, but the bonus depends on the logic in this method.
@@ -1738,7 +1737,7 @@ bool CallAnalyzer::simplifyCallSite(Function *F, CallBase &Call) {
 
 bool CallAnalyzer::visitCallBase(CallBase &Call) {
   if (Call.hasFnAttr(Attribute::ReturnsTwice) &&
-      !F.hasFnAttribute(Attribute::ReturnsTwice)) {
+      !OriginalCallee.hasFnAttribute(Attribute::ReturnsTwice)) {
     // This aborts the entire analysis.
     ExposesReturnsTwice = true;
     return false;
@@ -1929,7 +1928,7 @@ bool CallAnalyzer::visitSwitchInst(SwitchInst &SI) {
   // does not (yet) fire.
 
   unsigned JumpTableSize = 0;
-  BlockFrequencyInfo *BFI = GetBFI ? &(GetBFI(F)) : nullptr;
+  BlockFrequencyInfo *BFI = GetBFI ? &(GetBFI(OriginalCallee)) : nullptr;
   unsigned NumCaseCluster =
       TTI.getEstimatedNumberOfCaseClusters(SI, JumpTableSize, PSI, BFI);
 
@@ -2052,7 +2051,7 @@ CallAnalyzer::analyzeBlock(BasicBlock *BB,
         ORE->emit([&]() {
           return OptimizationRemarkMissed(DEBUG_TYPE, "NeverInline",
                                           &CandidateCall)
-                 << NV("Callee", &F) << " has uninlinable pattern ("
+                 << NV("Callee", &OriginalCallee) << " has uninlinable pattern ("
                  << NV("InlineResult", IR.getFailureReason())
                  << ") and cost is not fully computed";
         });
@@ -2070,7 +2069,7 @@ CallAnalyzer::analyzeBlock(BasicBlock *BB,
         ORE->emit([&]() {
           return OptimizationRemarkMissed(DEBUG_TYPE, "NeverInline",
                                           &CandidateCall)
-                 << NV("Callee", &F) << " is "
+                 << NV("Callee", &OriginalCallee) << " is "
                  << NV("InlineResult", IR.getFailureReason())
                  << ". Cost is not fully computed";
         });
@@ -2176,7 +2175,7 @@ InlineResult CallAnalyzer::analyze() {
   if (!Result.isSuccess())
     return Result;
 
-  if (F.empty())
+  if (OriginalCallee.empty())
     return InlineResult::success();
 
   Function *Caller = CandidateCall.getFunction();
@@ -2192,7 +2191,7 @@ InlineResult CallAnalyzer::analyze() {
   // Populate our simplified values by mapping from function arguments to call
   // arguments with known important simplifications.
   auto CAI = CandidateCall.arg_begin();
-  for (Function::arg_iterator FAI = F.arg_begin(), FAE = F.arg_end();
+  for (Function::arg_iterator FAI = SimplifiedCallee.arg_begin(), FAE = SimplifiedCallee.arg_end();
        FAI != FAE; ++FAI, ++CAI) {
     assert(CAI != CandidateCall.arg_end());
     if (Constant *C = dyn_cast<Constant>(CAI))
@@ -2218,7 +2217,7 @@ InlineResult CallAnalyzer::analyze() {
   // the ephemeral values multiple times (and they're completely determined by
   // the callee, so this is purely duplicate work).
   SmallPtrSet<const Value *, 32> EphValues;
-  CodeMetrics::collectEphemeralValues(&F, &GetAssumptionCache(F), EphValues);
+  CodeMetrics::collectEphemeralValues(&SimplifiedCallee, &GetAssumptionCache(SimplifiedCallee), EphValues);
 
   // The worklist of live basic blocks in the callee *after* inlining. We avoid
   // adding basic blocks of the callee which can be proven to be dead for this
@@ -2231,7 +2230,7 @@ InlineResult CallAnalyzer::analyze() {
                     SmallPtrSet<BasicBlock *, 16>>
       BBSetVector;
   BBSetVector BBWorklist;
-  BBWorklist.insert(&F.getEntryBlock());
+  BBWorklist.insert(&SimplifiedCallee.getEntryBlock());
 
   // Note that we *must not* cache the size, this loop grows the worklist.
   for (unsigned Idx = 0; Idx != BBWorklist.size(); ++Idx) {
@@ -2298,14 +2297,8 @@ InlineResult CallAnalyzer::analyze() {
     onBlockAnalyzed(BB);
   }
 
-  Function *ActualCallee;
-  if(OriginalCallee)
-    ActualCallee = OriginalCallee;
-  else
-    ActualCallee = &F;
-
-  bool OnlyOneCallAndLocalLinkage = ActualCallee->hasLocalLinkage() && ActualCallee->hasOneUse() &&
-                                    ActualCallee == CandidateCall.getCalledFunction();
+  bool OnlyOneCallAndLocalLinkage = OriginalCallee.hasLocalLinkage() && OriginalCallee.hasOneUse() &&
+                                    &OriginalCallee == CandidateCall.getCalledFunction();
   // If this is a noduplicate call, we can still inline as long as
   // inlining this would cause the removal of the caller (so the instruction
   // is not actually duplicated, just moved).
@@ -2318,7 +2311,7 @@ InlineResult CallAnalyzer::analyze() {
 void InlineCostCallAnalyzer::print() {
 #define DEBUG_PRINT_STAT(x) dbgs() << "      " #x ": " << x << "\n"
   if (PrintInstructionComments)
-    F.print(dbgs(), &Writer);
+    OriginalCallee.print(dbgs(), &Writer);
   DEBUG_PRINT_STAT(NumConstantArgs);
   DEBUG_PRINT_STAT(NumConstantOffsetPtrArgs);
   DEBUG_PRINT_STAT(NumAllocaArgs);
@@ -2417,7 +2410,7 @@ Optional<int> llvm::getInliningCostEstimate(
                                /*ComputeFullInlineCost*/ true,
                                /*EnableDeferral*/ true};
 
-  InlineCostCallAnalyzer CA(*Call.getCalledFunction(), Call, Params, CalleeTTI,
+  InlineCostCallAnalyzer CA(*Call.getCalledFunction(), *Call.getCalledFunction(), Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE, true,
                             /*IgnoreThreshold*/ true);
   auto R = CA.analyze();
@@ -2521,13 +2514,12 @@ static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
 }
 
 
-Function* GetOptCallee(CallBase &CB, 
+Function* GetOptCallee(Function *Callee, CallBase &CB, 
     TargetTransformInfo *CalleeTTI, 
     function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
     function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
 
   Function *Caller = CB.getCaller();
-  Function *Callee = CB.getCalledFunction();
   std::map<unsigned, Constant*> ConstantArguments;
 
   // errs() << "\nCallee original:\n";
@@ -2630,10 +2622,9 @@ InlineCost llvm::getInlineCost(
                           << ")\n");
 
 
-  Function* OptCallee = GetOptCallee(Call, &CalleeTTI, GetTLI, GetAssumptionCache);
-  InlineCostCallAnalyzer CA (*OptCallee, Call, Params, CalleeTTI,
-                            GetAssumptionCache, GetBFI, PSI, ORE, 
-                            Callee);
+  Function* OptCallee = GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
+  InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
+                            GetAssumptionCache, GetBFI, PSI, ORE);
 
   InlineResult ShouldInline = CA.analyze();
   OptCallee->eraseFromParent();
@@ -2813,7 +2804,7 @@ InlineCostAnnotationPrinterPass::run(Function &F,
         if (!CalledFunction || CalledFunction->isDeclaration())
           continue;
         OptimizationRemarkEmitter ORE(CalledFunction);
-        InlineCostCallAnalyzer ICCA(*CalledFunction, *CI, Params, TTI,
+        InlineCostCallAnalyzer ICCA(*CalledFunction, *CalledFunction, *CI, Params, TTI,
                                     GetAssumptionCache, nullptr, &PSI, &ORE);
         ICCA.analyze();
         OS << "      Analyzing call of " << CalledFunction->getName()
