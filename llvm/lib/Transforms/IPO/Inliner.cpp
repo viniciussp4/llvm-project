@@ -71,6 +71,9 @@
 #include <utility>
 #include <vector>
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
+#include "llvm/Transforms/Scalar/IndVarSimplify.h"
+#include "llvm/Analysis/MemorySSAUpdater.h"
 
 using namespace llvm;
 
@@ -311,6 +314,106 @@ static void mergeInlinedArrayAllocas(Function *Caller, InlineFunctionInfo &IFI,
   }
 }
 
+static bool SimplifyInstructions(Function &F) {
+  bool Modified = false;
+  for (BasicBlock &BB : F) {
+    if(SimplifyInstructionsInBlock(&BB)) {
+      Modified = true;
+    }
+  }
+
+  return Modified;
+}
+
+static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
+  bool Modified = false;
+  std::list<BasicBlock*> BBs;
+  for (BasicBlock &BB : F) BBs.push_back(&BB);
+  for (BasicBlock *BB : BBs) {
+    if(simplifyCFG(BB, *TTI)) {
+      Modified = true;
+    }
+  }
+
+  return Modified;
+}
+
+/// Process all loops in the function, inner-most out.
+static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
+                                ScalarEvolution *SE) {
+  bool Changed = false;
+  for (auto &L : *LI)
+    Changed |= formLCSSARecursively(*L, DT, LI, SE);
+  return Changed;
+}
+
+void OptimizeFunction(Function *F) {
+
+  // errs() << "\nF original:\n";
+  // F->dump();
+  // errs() << "\n";
+
+  TargetTransformInfo TTI(F->getParent()->getDataLayout());
+  TargetLibraryInfoImpl TLLI;
+  Optional<const llvm::Function *> OptinalCaller(F); 
+  TargetLibraryInfo TLI(TLLI, OptinalCaller);
+  AssumptionCache AC(*F);
+
+  DominatorTree DT(*F);
+  LoopInfo LI(DT);
+
+  ScalarEvolution SE(*F, TLI, AC, DT, LI);
+   
+  const DataLayout &DL = F->getParent()->getDataLayout();
+
+  formLCSSAOnAllLoops(&LI, DT, &SE);
+
+  IndVarSimplify IVS(&LI, &SE, &DT, DL, &TLI, &TTI, nullptr);
+  for (Loop * L : LI.getLoopsInPreorder()) {
+    if (L->isRecursivelyLCSSAForm(DT, LI))
+      IVS.run(L);
+  }
+
+  bool modifiedFunction;
+  do {
+    modifiedFunction = false;
+
+    if(SimplifyInstructions(*F)) {
+      errs() << "\n[GetOptFunction] Function " << F->getName() << " was simplified using SimplifyInstructionsInBlock()\n";
+      modifiedFunction = true;
+    }
+
+    if(SimplifyCFG(*F, &TTI)) {
+      errs() << "\n[GetOptFunction] Function " << F->getName() << " was simplified using SimplifyCFG()\n";
+      modifiedFunction = true;
+    }
+
+  } while(modifiedFunction);
+
+  // errs() << "\nF:\n";
+  // F->dump();
+  // errs() << "\n";
+}
+
+size_t EstimateFunctionSize(Function *F, TargetTransformInfo *TTI) {
+  double size = 0;
+  for (Instruction &I : instructions(F)) {
+    switch(I.getOpcode()) {
+    //case Instruction::Alloca:
+    case Instruction::PHI:
+      size += 0.2;
+      break;
+    //case Instruction::Select:
+    //  size += 1.2;
+    //  break;
+    default:
+      size += TTI->getInstructionCost(
+        &I, TargetTransformInfo::TargetCostKind::TCK_CodeSize);
+    }
+  }
+  return size_t(std::ceil(size));
+}
+
 /// If it is possible to inline the specified call site,
 /// do so and update the CallGraph for this operation.
 ///
@@ -331,7 +434,21 @@ static InlineResult inlineCallIfPossible(
 
   // Try to inline the function.  Get the list of static allocas that were
   // inlined.
+  ValueToValueMapTy VMap;
+  Function* OriginalCaller = CloneFunction(Caller, VMap);
+
   InlineResult IR = InlineFunction(CB, IFI, &AAR, InsertLifetime);
+  OptimizeFunction(Caller);
+
+  //if(SizeOptCaller > SizeOriginalCaller)
+  TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
+  if(EstimateFunctionSize(Caller, &CallerTTI) > EstimateFunctionSize(OriginalCaller, &CallerTTI)) {
+    Caller->replaceAllUsesWith(OriginalCaller);
+    OriginalCaller->takeName(Caller);
+    Caller->eraseFromParent();
+    // IR = InlineResult::failure("Caller size is bigger after inlining.");
+  }
+
   if (!IR.isSuccess())
     return IR;
 

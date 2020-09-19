@@ -2525,7 +2525,6 @@ static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
   return Changed;
 }
 
-
 Function* GetOptCallee(Function *Callee, CallBase &CB, 
     TargetTransformInfo *CalleeTTI, 
     function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
@@ -2559,27 +2558,9 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
 
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
-  
-
-  bool modifiedFunction;
-  do {
-    modifiedFunction = false;
-
-    if(SimplifyInstructions(*ClonedCallee)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
-      modifiedFunction = true;
-    }
-
-    if(SimplifyCFG(*ClonedCallee, CalleeTTI)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
-      modifiedFunction = true;
-    }
-
-  } while(modifiedFunction);
 
   DominatorTree DT(*ClonedCallee);
   LoopInfo LI(DT);
-
 
   TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
   AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
@@ -2594,6 +2575,7 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
       IVS.run(L);
   }
 
+  bool modifiedFunction;
   do {
     modifiedFunction = false;
 
