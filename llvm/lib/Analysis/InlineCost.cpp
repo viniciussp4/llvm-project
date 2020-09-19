@@ -406,13 +406,13 @@ protected:
 
 public:
   CallAnalyzer(
-      Function &Callee, Function &OptCallee, CallBase &Call, const TargetTransformInfo &TTI,
+      Function &OriginalCallee, Function &OptCallee, CallBase &Call, const TargetTransformInfo &TTI,
       function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
       function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
       ProfileSummaryInfo *PSI = nullptr,
-      OptimizationRemarkEmitter *ORE = nullptr, Function *OriginalCallee = nullptr)
+      OptimizationRemarkEmitter *ORE = nullptr)
       : TTI(TTI), GetAssumptionCache(GetAssumptionCache), GetBFI(GetBFI),
-        PSI(PSI), OriginalCallee(Callee), SimplifiedCallee(OptCallee), DL(Callee.getParent()->getDataLayout()), ORE(ORE),
+        PSI(PSI), OriginalCallee(OriginalCallee), SimplifiedCallee(OptCallee), DL(OriginalCallee.getParent()->getDataLayout()), ORE(ORE),
         CandidateCall(Call), EnableLoadElimination(true) {}
 
   InlineResult analyze();
@@ -828,14 +828,14 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
 
 public:
   InlineCostCallAnalyzer(
-      Function &Callee, Function &OptCallee, CallBase &Call, const InlineParams &Params,
+      Function &OriginalCallee, Function &OptCallee, CallBase &Call, const InlineParams &Params,
       const TargetTransformInfo &TTI,
       function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
       function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
       ProfileSummaryInfo *PSI = nullptr,
       OptimizationRemarkEmitter *ORE = nullptr, bool BoostIndirect = true,
-      bool IgnoreThreshold = false, Function *OriginalCallee = nullptr)
-      : CallAnalyzer(Callee, OptCallee, Call, TTI, GetAssumptionCache, GetBFI, PSI, ORE, OriginalCallee),
+      bool IgnoreThreshold = false)
+      : CallAnalyzer(OriginalCallee, OptCallee, Call, TTI, GetAssumptionCache, GetBFI, PSI, ORE),
         ComputeFullInlineCost(OptComputeFullInlineCost ||
                               Params.ComputeFullInlineCost || ORE),
         Params(Params), Threshold(Params.DefaultThreshold),
@@ -2635,8 +2635,8 @@ InlineCost llvm::getInlineCost(
 
 
   Function* OptCallee = GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
-  InlineCostCallAnalyzer CA (*OptCallee, *OptCallee, Call, Params, CalleeTTI,
-                            GetAssumptionCache, GetBFI, PSI, ORE, Callee);
+  InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
+                            GetAssumptionCache, GetBFI, PSI, ORE);
   // InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
   //                           GetAssumptionCache, GetBFI, PSI, ORE);
 
