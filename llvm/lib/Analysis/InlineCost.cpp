@@ -639,6 +639,13 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     InstructionCostDetailMap[I].ThresholdAfter = Threshold;
   }
 
+  std::string sanitizeFunctionName(StringRef FName) {
+    std::string StrFName = FName.str();
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'), StrFName.end());
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'), StrFName.end());
+    return StrFName;
+  }
+
   bool Profitable() {
     bool HasAlloca = false;
     bool IsDiscardable = true;
@@ -724,7 +731,12 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
       }
     }
 
-    return IsDiscardable || HasAlloca || LoadAndStores == 0;
+    if(IsDiscardable || HasAlloca || LoadAndStores == 0) {
+      return true;
+    } else {
+      errs() << "~> [Filtered Function]: " << "|Callee:" << sanitizeFunctionName(Callee->getName()) << "|Caller:" << sanitizeFunctionName(Caller->getName()) << "|CalleeBBs:" << std::to_string(Callee->getBasicBlockList().size()) << "|CalleeInsts:" << std::to_string(Callee->getInstructionCount()) << "|Occurrences: 1" << "|Filename:" << Callee->getParent()->getSourceFileName();
+      return false;
+    }
   }
 
   InlineResult finalizeAnalysis() override {
@@ -2623,8 +2635,10 @@ InlineCost llvm::getInlineCost(
 
 
   Function* OptCallee = GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
-  InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
-                            GetAssumptionCache, GetBFI, PSI, ORE);
+  InlineCostCallAnalyzer CA (*OptCallee, *OptCallee, Call, Params, CalleeTTI,
+                            GetAssumptionCache, GetBFI, PSI, ORE, Callee);
+  // InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
+  //                           GetAssumptionCache, GetBFI, PSI, ORE);
 
   InlineResult ShouldInline = CA.analyze();
   OptCallee->eraseFromParent();
