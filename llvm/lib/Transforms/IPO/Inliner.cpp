@@ -352,8 +352,9 @@ void OptimizeFunction(Function *F) {
   // errs() << "\nF original:\n";
   // F->dump();
   // errs() << "\n";
+  const DataLayout &DL = F->getParent()->getDataLayout();
 
-  TargetTransformInfo TTI(F->getParent()->getDataLayout());
+  TargetTransformInfo TTI(DL);
   TargetLibraryInfoImpl TLLI;
   Optional<const llvm::Function *> OptinalCaller(F); 
   TargetLibraryInfo TLI(TLLI, OptinalCaller);
@@ -364,7 +365,6 @@ void OptimizeFunction(Function *F) {
 
   ScalarEvolution SE(*F, TLI, AC, DT, LI);
    
-  const DataLayout &DL = F->getParent()->getDataLayout();
 
   formLCSSAOnAllLoops(&LI, DT, &SE);
 
