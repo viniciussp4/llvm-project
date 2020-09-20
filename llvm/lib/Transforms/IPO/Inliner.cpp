@@ -347,7 +347,9 @@ static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
   return Changed;
 }
 
-void OptimizeFunction(Function *F) {
+void OptimizeFunction(Function *F,
+    function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
+    function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
 
   // errs() << "\nF original:\n";
   // F->dump();
@@ -355,10 +357,9 @@ void OptimizeFunction(Function *F) {
   const DataLayout &DL = F->getParent()->getDataLayout();
 
   TargetTransformInfo TTI(DL);
-  TargetLibraryInfoImpl TLLI;
-  Optional<const llvm::Function *> OptinalCaller(F); 
-  TargetLibraryInfo TLI(TLLI, OptinalCaller);
-  AssumptionCache AC(*F);
+
+  TargetLibraryInfo TLI = GetTLI(*F);
+  AssumptionCache AC = GetAssumptionCache(*F);;
 
   DominatorTree DT(*F);
   LoopInfo LI(DT);
@@ -426,7 +427,9 @@ static InlineResult inlineCallIfPossible(
     CallBase &CB, InlineFunctionInfo &IFI,
     InlinedArrayAllocasTy &InlinedArrayAllocas, int InlineHistory,
     bool InsertLifetime, function_ref<AAResults &(Function &)> &AARGetter,
-    ImportedFunctionsInliningStatistics &ImportedFunctionsStats) {
+    ImportedFunctionsInliningStatistics &ImportedFunctionsStats,
+    function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
+    function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
   Function *Callee = CB.getCalledFunction();
   Function *Caller = CB.getCaller();
 
@@ -438,19 +441,27 @@ static InlineResult inlineCallIfPossible(
   Function* OriginalCaller = CloneFunction(Caller, VMap);
 
   InlineResult IR = InlineFunction(CB, IFI, &AAR, InsertLifetime);
-  OptimizeFunction(Caller);
+  
+  if (!IR.isSuccess()) {
+    OriginalCaller->eraseFromParent();
+    return IR;
+  }
+  
+  OptimizeFunction(Caller, GetTLI, GetAssumptionCache);
 
   //if(SizeOptCaller > SizeOriginalCaller)
   TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
   if(EstimateFunctionSize(Caller, &CallerTTI) > EstimateFunctionSize(OriginalCaller, &CallerTTI)) {
+    errs() << "\nOriginalCaller Type:\n";
+    OriginalCaller->getFunctionType()->dump();
+    errs() << "\nOpt Caller Type:\n";
+    Caller->getFunctionType()->dump();
+    
     Caller->replaceAllUsesWith(OriginalCaller);
     OriginalCaller->takeName(Caller);
     Caller->eraseFromParent();
-    // IR = InlineResult::failure("Caller size is bigger after inlining.");
+    IR = InlineResult::failure("Caller size is bigger after inlining.");
   }
-
-  if (!IR.isSuccess())
-    return IR;
 
   if (InlinerFunctionImportStats != InlinerFunctionImportStatsOpts::No)
     ImportedFunctionsStats.recordInline(*Caller, *Callee);
@@ -741,7 +752,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
 
         InlineResult IR = inlineCallIfPossible(
             CB, InlineInfo, InlinedArrayAllocas, InlineHistoryID,
-            InsertLifetime, AARGetter, ImportedFunctionsStats);
+            InsertLifetime, AARGetter, ImportedFunctionsStats, GetTLI, GetAssumptionCache);
         if (!IR.isSuccess()) {
           setInlineRemark(CB, std::string(IR.getFailureReason()) + "; " +
                                   inlineCostStr(*OIC));
