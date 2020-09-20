@@ -445,16 +445,17 @@ static InlineResult inlineCallIfPossible(
     Function* TestCaller = CloneFunction(Caller, VMap);
     CallBase *MappedCB = dyn_cast<CallBase>(VMap[&CB]);
     InlineFunctionInfo TestIFI;
+    Function *InlinedCaller = MappedCB->getCalledFunction();
     InlineResult IR = InlineFunction(*MappedCB, TestIFI, &AAR, InsertLifetime);
     if (!IR.isSuccess()) {
       TestCaller->eraseFromParent();
       return IR;
     }
-    OptimizeFunction(TestCaller, GetTLI, GetAssumptionCache);
+    OptimizeFunction(InlinedCaller, GetTLI, GetAssumptionCache);
   
     TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
-    size_t SizeAfterInlining = EstimateFunctionSize(TestCaller, &CallerTTI);
-    size_t SizeBeforeInlining = EstimateFunctionSize(Caller, &CallerTTI);
+    size_t SizeAfterInlining = EstimateFunctionSize(InlinedCaller, &CallerTTI);
+    size_t SizeBeforeInlining = EstimateFunctionSize(TestCaller, &CallerTTI);
     TestCaller->eraseFromParent();
   
     if(SizeAfterInlining > SizeBeforeInlining ) {
