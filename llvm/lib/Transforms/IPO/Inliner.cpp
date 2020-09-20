@@ -355,8 +355,24 @@ void OptimizeFunction(Function *F,
   // F->dump();
   // errs() << "\n";
   const DataLayout &DL = F->getParent()->getDataLayout();
-
   TargetTransformInfo TTI(DL);
+
+  bool modifiedFunction;
+  do {
+    modifiedFunction = false;
+
+    if(SimplifyInstructions(*F)) {
+      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyInstructionsInBlock()\n";
+      modifiedFunction = true;
+    }
+
+    if(SimplifyCFG(*F, &TTI)) {
+      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyCFG()\n";
+      modifiedFunction = true;
+    }
+
+  } while(modifiedFunction);
+
 
   TargetLibraryInfo TLI = GetTLI(*F);
   AssumptionCache AC = GetAssumptionCache(*F);;
@@ -375,44 +391,29 @@ void OptimizeFunction(Function *F,
       IVS.run(L);
   }
 
-  bool modifiedFunction;
   do {
     modifiedFunction = false;
 
     if(SimplifyInstructions(*F)) {
-      errs() << "\n[GetOptFunction] Function " << F->getName() << " was simplified using SimplifyInstructionsInBlock()\n";
+      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyInstructionsInBlock()\n";
       modifiedFunction = true;
     }
 
     if(SimplifyCFG(*F, &TTI)) {
-      errs() << "\n[GetOptFunction] Function " << F->getName() << " was simplified using SimplifyCFG()\n";
+      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyCFG()\n";
       modifiedFunction = true;
     }
 
   } while(modifiedFunction);
-
-  // errs() << "\nF:\n";
-  // F->dump();
-  // errs() << "\n";
 }
 
 size_t EstimateFunctionSize(Function *F, TargetTransformInfo *TTI) {
-  double size = 0;
+  size_t size = 0;
   for (Instruction &I : instructions(F)) {
-    switch(I.getOpcode()) {
-    //case Instruction::Alloca:
-    case Instruction::PHI:
-      size += 0.2;
-      break;
-    //case Instruction::Select:
-    //  size += 1.2;
-    //  break;
-    default:
-      size += TTI->getInstructionCost(
+    size += TTI->getInstructionCost(
         &I, TargetTransformInfo::TargetCostKind::TCK_CodeSize);
-    }
   }
-  return size_t(std::ceil(size));
+  return size;
 }
 
 /// If it is possible to inline the specified call site,
@@ -438,29 +439,30 @@ static InlineResult inlineCallIfPossible(
   // Try to inline the function.  Get the list of static allocas that were
   // inlined.
   ValueToValueMapTy VMap;
-  Function* OriginalCaller = CloneFunction(Caller, VMap);
-
-  InlineResult IR = InlineFunction(CB, IFI, &AAR, InsertLifetime);
-  
+  Function* TestCaller = CloneFunction(Caller, VMap);
+  CallBase *MappedCB = dyn_cast<CallBase>(VMap[&CB]);
+  InlineFunctionInfo TestIFI;
+  InlineResult IR = InlineFunction(*MappedCB, TestIFI, &AAR, InsertLifetime);
   if (!IR.isSuccess()) {
-    OriginalCaller->eraseFromParent();
+    TestCaller->eraseFromParent();
+    return IR;
+  }
+  OptimizeFunction(TestCaller, GetTLI, GetAssumptionCache);
+
+  TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
+  size_t SizeAfterInlining = EstimateFunctionSize(TestCaller, &CallerTTI);
+  size_t SizeBeforeInlining = EstimateFunctionSize(Caller, &CallerTTI);
+  TestCaller->eraseFromParent();
+
+  if(SizeAfterInlining > SizeBeforeInlining ) {
+    IR = InlineResult::failure("Caller size is bigger after inlining.");
     return IR;
   }
   
-  OptimizeFunction(Caller, GetTLI, GetAssumptionCache);
-
-  //if(SizeOptCaller > SizeOriginalCaller)
-  TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
-  if(EstimateFunctionSize(Caller, &CallerTTI) > EstimateFunctionSize(OriginalCaller, &CallerTTI)) {
-    errs() << "\nOriginalCaller Type:\n";
-    OriginalCaller->getFunctionType()->dump();
-    errs() << "\nOpt Caller Type:\n";
-    Caller->getFunctionType()->dump();
-    
-    Caller->replaceAllUsesWith(OriginalCaller);
-    OriginalCaller->takeName(Caller);
-    Caller->eraseFromParent();
-    IR = InlineResult::failure("Caller size is bigger after inlining.");
+  IR = InlineFunction(CB, IFI, &AAR, InsertLifetime);
+  
+  if (!IR.isSuccess()) {
+    return IR;
   }
 
   if (InlinerFunctionImportStats != InlinerFunctionImportStatsOpts::No)

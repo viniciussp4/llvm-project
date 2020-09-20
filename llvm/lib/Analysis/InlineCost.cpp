@@ -2559,22 +2559,6 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
 
-  DominatorTree DT(*ClonedCallee);
-  LoopInfo LI(DT);
-
-  TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
-  AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
-  ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
-  const DataLayout &DL = ClonedCallee->getParent()->getDataLayout();
-
-  formLCSSAOnAllLoops(&LI, DT, &SE);
-
-  IndVarSimplify IVS(&LI, &SE, &DT, DL, &TLI, CalleeTTI, nullptr);
-  for (Loop * L : LI.getLoopsInPreorder()) {
-    if (L->isRecursivelyLCSSAForm(DT, LI))
-      IVS.run(L);
-  }
-
   bool modifiedFunction;
   do {
     modifiedFunction = false;
@@ -2591,8 +2575,40 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
 
   } while(modifiedFunction);
 
-  // errs() << "\nClonedCallee:\n";
-  // ClonedCallee->dump();
+  DominatorTree DT(*ClonedCallee);
+  LoopInfo LI(DT);
+
+  TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
+  AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
+  ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
+  const DataLayout &DL = ClonedCallee->getParent()->getDataLayout();
+
+  formLCSSAOnAllLoops(&LI, DT, &SE);
+
+  IndVarSimplify IVS(&LI, &SE, &DT, DL, &TLI, CalleeTTI, nullptr);
+  for (Loop * L : LI.getLoopsInPreorder()) {
+    if (L->isRecursivelyLCSSAForm(DT, LI))
+      IVS.run(L);
+  }
+
+  modifiedFunction;
+  do {
+    modifiedFunction = false;
+
+    if(SimplifyInstructions(*ClonedCallee)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
+      modifiedFunction = true;
+    }
+
+    if(SimplifyCFG(*ClonedCallee, CalleeTTI)) {
+      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
+      modifiedFunction = true;
+    }
+
+  } while(modifiedFunction);
+
+  //errs() << "\nClonedCallee:\n";
+  //ClonedCallee->dump();
   // errs() << "\n";
 
   return ClonedCallee;
