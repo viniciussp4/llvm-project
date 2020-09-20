@@ -95,6 +95,8 @@ static cl::opt<bool>
     DisableInlinedAllocaMerging("disable-inlined-alloca-merging",
                                 cl::init(false), cl::Hidden);
 
+bool EnableBacktrack = true;
+
 namespace {
 
 enum class InlinerFunctionImportStatsOpts {
@@ -436,30 +438,32 @@ static InlineResult inlineCallIfPossible(
 
   AAResults &AAR = AARGetter(*Callee);
 
-  // Try to inline the function.  Get the list of static allocas that were
-  // inlined.
-  ValueToValueMapTy VMap;
-  Function* TestCaller = CloneFunction(Caller, VMap);
-  CallBase *MappedCB = dyn_cast<CallBase>(VMap[&CB]);
-  InlineFunctionInfo TestIFI;
-  InlineResult IR = InlineFunction(*MappedCB, TestIFI, &AAR, InsertLifetime);
-  if (!IR.isSuccess()) {
-    TestCaller->eraseFromParent();
-    return IR;
-  }
-  OptimizeFunction(TestCaller, GetTLI, GetAssumptionCache);
-
-  TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
-  size_t SizeAfterInlining = EstimateFunctionSize(TestCaller, &CallerTTI);
-  size_t SizeBeforeInlining = EstimateFunctionSize(Caller, &CallerTTI);
-  TestCaller->eraseFromParent();
-
-  if(SizeAfterInlining > SizeBeforeInlining ) {
-    IR = InlineResult::failure("Caller size is bigger after inlining.");
-    return IR;
-  }
+  if (EnableBacktrack) {
+    // Try to inline the function.  Get the list of static allocas that were
+    // inlined.
+    ValueToValueMapTy VMap;
+    Function* TestCaller = CloneFunction(Caller, VMap);
+    CallBase *MappedCB = dyn_cast<CallBase>(VMap[&CB]);
+    InlineFunctionInfo TestIFI;
+    InlineResult IR = InlineFunction(*MappedCB, TestIFI, &AAR, InsertLifetime);
+    if (!IR.isSuccess()) {
+      TestCaller->eraseFromParent();
+      return IR;
+    }
+    OptimizeFunction(TestCaller, GetTLI, GetAssumptionCache);
   
-  IR = InlineFunction(CB, IFI, &AAR, InsertLifetime);
+    TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
+    size_t SizeAfterInlining = EstimateFunctionSize(TestCaller, &CallerTTI);
+    size_t SizeBeforeInlining = EstimateFunctionSize(Caller, &CallerTTI);
+    TestCaller->eraseFromParent();
+  
+    if(SizeAfterInlining > SizeBeforeInlining ) {
+      IR = InlineResult::failure("Caller size is bigger after inlining.");
+      return IR;
+    }
+  }
+
+  InlineResult IR = InlineFunction(CB, IFI, &AAR, InsertLifetime);
   
   if (!IR.isSuccess()) {
     return IR;
