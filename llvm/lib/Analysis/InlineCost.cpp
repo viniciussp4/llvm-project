@@ -44,13 +44,11 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Transforms/Utils/Local.h"
-#include "llvm/Transforms/Utils/SimplifyIndVar.h"
-#include "llvm/Analysis/ScalarEvolution.h"
-#include "llvm/Transforms/Utils/UnrollLoop.h"
-#include "llvm/Transforms/Utils/LoopUtils.h"
-#include "llvm/Transforms/Scalar/IndVarSimplify.h"
 #include "llvm/Analysis/MemorySSAUpdater.h"
+
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 
 using namespace llvm;
 
@@ -658,8 +656,8 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
 
     if (!Callee->isDiscardableIfUnused())
     {
-      std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-      errs() << Str;
+      //std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+      //errs() << Str;
       IsDiscardable = false;
     } 
 
@@ -728,7 +726,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
       }
 
       if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
-        errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+        //errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
         HasAlloca = true;
       }
     }
@@ -736,7 +734,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     if(IsDiscardable || HasAlloca || LoadAndStores == 0) {
       return true;
     } else {
-      errs() << "~> [Filtered Function]: " << "|Callee:" << sanitizeFunctionName(Callee->getName()) << "|Caller:" << sanitizeFunctionName(Caller->getName()) << "|CalleeBBs:" << std::to_string(Callee->getBasicBlockList().size()) << "|CalleeInsts:" << std::to_string(Callee->getInstructionCount()) << "|Occurrences: 1" << "|Filename:" << Callee->getParent()->getSourceFileName();
+      //errs() << "~> [Filtered Function]: " << "|Callee:" << sanitizeFunctionName(Callee->getName()) << "|Caller:" << sanitizeFunctionName(Caller->getName()) << "|CalleeBBs:" << std::to_string(Callee->getBasicBlockList().size()) << "|CalleeInsts:" << std::to_string(Callee->getInstructionCount()) << "|Occurrences: 1" << "|Filename:" << Callee->getParent()->getSourceFileName();
       return false;
     }
   }
@@ -2494,39 +2492,6 @@ Optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return None;
 }
 
-static bool SimplifyInstructions(Function &F) {
-  bool Modified = false;
-  for (BasicBlock &BB : F) {
-    if(SimplifyInstructionsInBlock(&BB)) {
-      Modified = true;
-    }
-  }
-
-  return Modified;
-}
-
-static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
-  bool Modified = false;
-  std::list<BasicBlock*> BBs;
-  for (BasicBlock &BB : F) BBs.push_back(&BB);
-  for (BasicBlock *BB : BBs) {
-    if(simplifyCFG(BB, *TTI)) {
-      Modified = true;
-    }
-  }
-
-  return Modified;
-}
-
-/// Process all loops in the function, inner-most out.
-static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
-                                ScalarEvolution *SE) {
-  bool Changed = false;
-  for (auto &L : *LI)
-    Changed |= formLCSSARecursively(*L, DT, LI, SE);
-  return Changed;
-}
-
 Function* GetOptCallee(Function *Callee, CallBase &CB, 
     TargetTransformInfo *CalleeTTI, 
     function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
@@ -2546,10 +2511,10 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
     Constant* c = dyn_cast<Constant>(CB.getArgOperand(i));
     GlobalValue* gv = dyn_cast<GlobalValue>(CB.getArgOperand(i));
     if(c) {
-      errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a constant. | " << Callee->getParent()->getSourceFileName() << "\n";
+      //errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a constant. | " << Callee->getParent()->getSourceFileName() << "\n";
       ConstantArguments[i] = c;
     } else if (gv) {
-      errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a Global Value. | " << Callee->getParent()->getSourceFileName() << "\n";
+      //errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a Global Value. | " << Callee->getParent()->getSourceFileName() << "\n";
       ConstantArguments[i] = gv;
     }
   }
@@ -2561,56 +2526,17 @@ Function* GetOptCallee(Function *Callee, CallBase &CB,
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
 
-  bool modifiedFunction;
-  do {
-    modifiedFunction = false;
-
-    if(SimplifyInstructions(*ClonedCallee)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
-      modifiedFunction = true;
-    }
-
-    if(SimplifyCFG(*ClonedCallee, CalleeTTI)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
-      modifiedFunction = true;
-    }
-
-  } while(modifiedFunction);
-
-  DominatorTree DT(*ClonedCallee);
-  LoopInfo LI(DT);
-
-  TargetLibraryInfo TLI = GetTLI(*ClonedCallee);
-  AssumptionCache AC = GetAssumptionCache(*ClonedCallee);
-  ScalarEvolution SE(*ClonedCallee, TLI, AC, DT, LI);
-  const DataLayout &DL = ClonedCallee->getParent()->getDataLayout();
-
-  formLCSSAOnAllLoops(&LI, DT, &SE);
-
-  IndVarSimplify IVS(&LI, &SE, &DT, DL, &TLI, CalleeTTI, nullptr);
-  for (Loop * L : LI.getLoopsInPreorder()) {
-    if (L->isRecursivelyLCSSAForm(DT, LI))
-      IVS.run(L);
-  }
-
-  do {
-    modifiedFunction = false;
-
-    if(SimplifyInstructions(*ClonedCallee)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyInstructionsInBlock()\n";
-      modifiedFunction = true;
-    }
-
-    if(SimplifyCFG(*ClonedCallee, CalleeTTI)) {
-      errs() << "\n[GetOptCallee] Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", was simplified using SimplifyCFG()\n";
-      modifiedFunction = true;
-    }
-
-  } while(modifiedFunction);
-
-  //errs() << "\nClonedCallee:\n";
-  //ClonedCallee->dump();
-  // errs() << "\n";
+  legacy::FunctionPassManager FPM(ClonedCallee->getParent());
+  FPM.add(createInstructionCombiningPass());
+  FPM.add(createCFGSimplificationPass());
+  FPM.add(createAggressiveDCEPass());
+  FPM.add(createIndVarSimplifyPass());
+  FPM.add(createCFGSimplificationPass());
+  FPM.add(createInstructionCombiningPass());
+  FPM.add(createCFGSimplificationPass());
+  FPM.doInitialization();
+  FPM.run(*ClonedCallee);
+  FPM.doFinalization();
 
   return ClonedCallee;
 }
@@ -2639,13 +2565,14 @@ InlineCost llvm::getInlineCost(
 
   Function* OptCallee = Callee;
   
-  if (EnableCloning)
+  if (EnableCloning && !Callee->isVarArg())
     OptCallee = GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
   InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
 
   InlineResult ShouldInline = CA.analyze();
-  if (EnableCloning)
+
+  if (EnableCloning && OptCallee!=Callee)
     OptCallee->eraseFromParent();
 
   LLVM_DEBUG(CA.dump());

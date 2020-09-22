@@ -75,6 +75,12 @@
 #include "llvm/Transforms/Scalar/IndVarSimplify.h"
 #include "llvm/Analysis/MemorySSAUpdater.h"
 
+
+#include "llvm/IR/LegacyPassManager.h"
+
+#include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+
 using namespace llvm;
 
 #define DEBUG_TYPE "inline"
@@ -316,97 +322,19 @@ static void mergeInlinedArrayAllocas(Function *Caller, InlineFunctionInfo &IFI,
   }
 }
 
-static bool SimplifyInstructions(Function &F) {
-  bool Modified = false;
-  for (BasicBlock &BB : F) {
-    if(SimplifyInstructionsInBlock(&BB)) {
-      Modified = true;
-    }
-  }
+void OptimizeFunction(Function *F) {
 
-  return Modified;
-}
-
-static bool SimplifyCFG(Function &F, TargetTransformInfo *TTI) {
-  bool Modified = false;
-  std::list<BasicBlock*> BBs;
-  for (BasicBlock &BB : F) BBs.push_back(&BB);
-  for (BasicBlock *BB : BBs) {
-    if(simplifyCFG(BB, *TTI)) {
-      Modified = true;
-    }
-  }
-
-  return Modified;
-}
-
-/// Process all loops in the function, inner-most out.
-static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
-                                ScalarEvolution *SE) {
-  bool Changed = false;
-  for (auto &L : *LI)
-    Changed |= formLCSSARecursively(*L, DT, LI, SE);
-  return Changed;
-}
-
-void OptimizeFunction(Function *F,
-    function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
-    function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
-
-  // errs() << "\nF original:\n";
-  // F->dump();
-  // errs() << "\n";
-  const DataLayout &DL = F->getParent()->getDataLayout();
-  TargetTransformInfo TTI(DL);
-
-  bool modifiedFunction;
-  do {
-    modifiedFunction = false;
-
-    if(SimplifyInstructions(*F)) {
-      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyInstructionsInBlock()\n";
-      modifiedFunction = true;
-    }
-
-    if(SimplifyCFG(*F, &TTI)) {
-      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyCFG()\n";
-      modifiedFunction = true;
-    }
-
-  } while(modifiedFunction);
-
-
-  TargetLibraryInfo TLI = GetTLI(*F);
-  AssumptionCache AC = GetAssumptionCache(*F);;
-
-  DominatorTree DT(*F);
-  LoopInfo LI(DT);
-
-  ScalarEvolution SE(*F, TLI, AC, DT, LI);
-   
-
-  formLCSSAOnAllLoops(&LI, DT, &SE);
-
-  IndVarSimplify IVS(&LI, &SE, &DT, DL, &TLI, &TTI, nullptr);
-  for (Loop * L : LI.getLoopsInPreorder()) {
-    if (L->isRecursivelyLCSSAForm(DT, LI))
-      IVS.run(L);
-  }
-
-  do {
-    modifiedFunction = false;
-
-    if(SimplifyInstructions(*F)) {
-      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyInstructionsInBlock()\n";
-      modifiedFunction = true;
-    }
-
-    if(SimplifyCFG(*F, &TTI)) {
-      errs() << "\n[OptimizeFunction] Function " << F->getName() << " was simplified using SimplifyCFG()\n";
-      modifiedFunction = true;
-    }
-
-  } while(modifiedFunction);
+  legacy::FunctionPassManager FPM(F->getParent());
+  FPM.add(createInstructionCombiningPass());
+  FPM.add(createCFGSimplificationPass());
+  FPM.add(createAggressiveDCEPass());
+  FPM.add(createIndVarSimplifyPass());
+  FPM.add(createCFGSimplificationPass());
+  FPM.add(createInstructionCombiningPass());
+  FPM.add(createCFGSimplificationPass());
+  FPM.doInitialization();
+  FPM.run(*F);
+  FPM.doFinalization();
 }
 
 size_t EstimateFunctionSize(Function *F, TargetTransformInfo *TTI) {
@@ -430,15 +358,13 @@ static InlineResult inlineCallIfPossible(
     CallBase &CB, InlineFunctionInfo &IFI,
     InlinedArrayAllocasTy &InlinedArrayAllocas, int InlineHistory,
     bool InsertLifetime, function_ref<AAResults &(Function &)> &AARGetter,
-    ImportedFunctionsInliningStatistics &ImportedFunctionsStats,
-    function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
-    function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
+    ImportedFunctionsInliningStatistics &ImportedFunctionsStats) {
   Function *Callee = CB.getCalledFunction();
   Function *Caller = CB.getCaller();
 
   AAResults &AAR = AARGetter(*Callee);
 
-  if (EnableBacktrack) {
+  if (EnableBacktrack && (!Callee->isDiscardableIfUnused())) {
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
     ValueToValueMapTy VMap;
@@ -450,14 +376,15 @@ static InlineResult inlineCallIfPossible(
       TestCaller->eraseFromParent();
       return IR;
     }
-    OptimizeFunction(TestCaller, GetTLI, GetAssumptionCache);
+    OptimizeFunction(TestCaller);
   
     TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
     size_t SizeAfterInlining = EstimateFunctionSize(TestCaller, &CallerTTI);
     size_t SizeBeforeInlining = EstimateFunctionSize(Caller, &CallerTTI);
     TestCaller->eraseFromParent();
   
-    if(SizeAfterInlining > SizeBeforeInlining ) {
+    size_t Threshold = 2;
+    if( (SizeAfterInlining + Threshold) >= SizeBeforeInlining ) {
       IR = InlineResult::failure("Caller size is bigger after inlining.");
       return IR;
     }
@@ -517,8 +444,8 @@ bool Profitable(CallBase &CB) {
 
   if (!Callee->isDiscardableIfUnused())
   {
-    std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-    errs() << Str;
+    //std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
+    //errs() << Str;
     IsDiscardable = false;
   }
 
@@ -580,7 +507,7 @@ bool Profitable(CallBase &CB) {
     }
 
     if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
-      errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+      //errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
       HasAlloca = true;
     }
   }
@@ -686,7 +613,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
   // std::map<Function*, StringRef > CalleeFilenames;
   bool Changed = false;
   bool LocalChange;
-  InliningDataVector IDV = InliningDataVector();
+  //InliningDataVector IDV = InliningDataVector();
   do {
     LocalChange = false;
     // Iterate over the outer loop because inlining functions can cause indirect
@@ -758,7 +685,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
 
         InlineResult IR = inlineCallIfPossible(
             CB, InlineInfo, InlinedArrayAllocas, InlineHistoryID,
-            InsertLifetime, AARGetter, ImportedFunctionsStats, GetTLI, GetAssumptionCache);
+            InsertLifetime, AARGetter, ImportedFunctionsStats);
         if (!IR.isSuccess()) {
           setInlineRemark(CB, std::string(IR.getFailureReason()) + "; " +
                                   inlineCostStr(*OIC));
@@ -772,7 +699,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
           continue;
         }
 
-        IDV.AddInlining(Callee, Caller);
+        //IDV.AddInlining(Callee, Caller);
 
         ++NumInlined;
 
@@ -844,10 +771,10 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
     }
   } while (LocalChange);
 
-  for (unsigned i = 0; i < IDV.vector.size(); i++) 
-  {
-    errs() << IDV.vector[i].print();
-  } 
+  //for (unsigned i = 0; i < IDV.vector.size(); i++) 
+  //{
+  //  errs() << IDV.vector[i].print();
+  //} 
 
   return Changed;
 }
