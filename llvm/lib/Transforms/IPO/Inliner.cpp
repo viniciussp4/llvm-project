@@ -371,11 +371,14 @@ static InlineResult inlineCallIfPossible(
     Function* TestCaller = CloneFunction(Caller, VMap);
     CallBase *MappedCB = dyn_cast<CallBase>(VMap[&CB]);
     InlineFunctionInfo TestIFI;
+
+    //inline Callee into TestCaller
     InlineResult IR = InlineFunction(*MappedCB, TestIFI, &AAR, InsertLifetime);
     if (!IR.isSuccess()) {
       TestCaller->eraseFromParent();
       return IR;
     }
+    //simplify TestCaller after the inlining
     OptimizeFunction(TestCaller);
   
     TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
