@@ -379,15 +379,21 @@ static InlineResult inlineCallIfPossible(
       return IR;
     }
     //simplify TestCaller after the inlining
+    ValueToValueMapTy TestCallerNotOptVMap;
+    Function* TestCallerNotOpt = CloneFunction(TestCaller, TestCallerNotOptVMap);
+
     OptimizeFunction(TestCaller);
   
     TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
-    size_t SizeAfterInlining = EstimateFunctionSize(TestCaller, &CallerTTI);
     size_t SizeBeforeInlining = EstimateFunctionSize(Caller, &CallerTTI);
+    size_t SizeAfterInlining = EstimateFunctionSize(TestCallerNotOpt, &CallerTTI);
+    size_t SizeAfterInliningAndOpt = EstimateFunctionSize(TestCaller, &CallerTTI);
     TestCaller->eraseFromParent();
-  
-    size_t Threshold = 2;
-    if( (SizeAfterInlining + Threshold) >= SizeBeforeInlining ) {
+
+    errs() << "\n[CallerSize]: |original_size:" << SizeBeforeInlining << "|size_after_inline:" << SizeAfterInlining << "|size_after_inline_opt:" << SizeAfterInliningAndOpt << "\n";
+
+    size_t Threshold = 0;
+    if( (SizeAfterInliningAndOpt + Threshold) >= SizeBeforeInlining ) {
       IR = InlineResult::failure("Caller size is bigger after inlining.");
       return IR;
     }
