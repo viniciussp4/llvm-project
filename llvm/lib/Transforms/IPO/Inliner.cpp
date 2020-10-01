@@ -367,33 +367,33 @@ static InlineResult inlineCallIfPossible(
   if (EnableBacktrack && (!Callee->isDiscardableIfUnused())) {
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
-    ValueToValueMapTy VMap;
-    Function* TestCaller = CloneFunction(Caller, VMap);
-    CallBase *MappedCB = dyn_cast<CallBase>(VMap[&CB]);
+    ValueToValueMapTy InlinedOptCallerVMap;
+    Function* InlinedOptCaller = CloneFunction(Caller, InlinedOptCallerVMap);
+    CallBase *MappedCB = dyn_cast<CallBase>(InlinedOptCallerVMap[&CB]);
     InlineFunctionInfo TestIFI;
 
-    //inline Callee into TestCaller
+    //inline Callee into InlinedOptCaller
     InlineResult IR = InlineFunction(*MappedCB, TestIFI, &AAR, InsertLifetime);
     if (!IR.isSuccess()) {
-      TestCaller->eraseFromParent();
+      InlinedOptCaller->eraseFromParent();
       return IR;
     }
-    //simplify TestCaller after the inlining
-    ValueToValueMapTy TestCallerNotOptVMap;
-    Function* TestCallerNotOpt = CloneFunction(TestCaller, TestCallerNotOptVMap);
+    OptimizeFunction(InlinedOptCaller);
 
-    OptimizeFunction(TestCaller);
+    ValueToValueMapTy OptCallerVMap;
+    Function* OptCaller = CloneFunction(Caller, OptCallerVMap);
+    OptimizeFunction(OptCaller);
   
     TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
-    size_t SizeBeforeInlining = EstimateFunctionSize(Caller, &CallerTTI);
-    size_t SizeAfterInlining = EstimateFunctionSize(TestCallerNotOpt, &CallerTTI);
-    size_t SizeAfterInliningAndOpt = EstimateFunctionSize(TestCaller, &CallerTTI);
-    TestCaller->eraseFromParent();
+    size_t SizeOptWithoutInlining = EstimateFunctionSize(OptCaller, &CallerTTI);
+    size_t SizeOptWithInlining = EstimateFunctionSize(InlinedOptCaller, &CallerTTI);
+    InlinedOptCaller->eraseFromParent();
+    OptCaller->eraseFromParent();
 
-    errs() << "\n[CallerSize]: |original_size:" << SizeBeforeInlining << "|size_after_inline:" << SizeAfterInlining << "|size_after_inline_opt:" << SizeAfterInliningAndOpt << "\n";
+    errs() << "\n[CallerSize]: |opt_without_inline_size:" << SizeOptWithoutInlining << "|opt_with_inline_size:" << SizeOptWithInlining << "\n";
 
     size_t Threshold = 0;
-    if( (SizeAfterInliningAndOpt + Threshold) >= SizeBeforeInlining ) {
+    if( (SizeOptWithInlining + Threshold) >= SizeOptWithoutInlining ) {
       IR = InlineResult::failure("Caller size is bigger after inlining.");
       return IR;
     }
