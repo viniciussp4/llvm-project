@@ -121,7 +121,7 @@ static cl::opt<bool> DisableGEPConstOperand(
     "disable-gep-const-evaluation", cl::Hidden, cl::init(false),
     cl::desc("Disables evaluation of GetElementPtr with constant operands"));
 
-bool EnableCloning = true;
+bool EnableCloning = false;
 
 namespace {
 class InlineCostCallAnalyzer;
@@ -2567,6 +2567,7 @@ InlineCost llvm::getInlineCost(
   
   if (EnableCloning && !Callee->isVarArg())
     OptCallee = GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
+  
   InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
 

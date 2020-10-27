@@ -101,7 +101,8 @@ static cl::opt<bool>
     DisableInlinedAllocaMerging("disable-inlined-alloca-merging",
                                 cl::init(false), cl::Hidden);
 
-bool EnableBacktrack = true;
+bool EnableBacktrack = false;
+bool EnableTrivialInlining = true;
 
 namespace {
 
@@ -622,7 +623,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
   // std::map<Function*, StringRef > CalleeFilenames;
   bool Changed = false;
   bool LocalChange;
-  //InliningDataVector IDV = InliningDataVector();
+  InliningDataVector IDV = InliningDataVector();
   do {
     LocalChange = false;
     // Iterate over the outer loop because inlining functions can cause indirect
@@ -660,11 +661,26 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       // just become a regular analysis dependency.
       OptimizationRemarkEmitter ORE(Caller);
 
-      auto OIC = shouldInline(CB, GetInlineCost, ORE);
-      // If the policy determines that we should inline this function,
-      // delete the call instead.
-      if (!OIC)
-        continue;
+      llvm::Optional<llvm::InlineCost> OIC;
+      if(EnableTrivialInlining) {
+        errs() << "\nRunning trivial inlining\n";
+        int calls = 0;
+        for(auto user = Callee->user_begin(); user != Callee->user_end(); user++) {
+          if(isa<CallInst>(*user))
+            calls++;
+        }
+
+        if(calls == 1 && Callee->isDiscardableIfUnused()) {
+          OIC = shouldInline(CB, GetInlineCost, ORE);
+          // If the policy determines that we should inline this function,
+          // delete the call instead.
+          if (!OIC)
+            continue;
+
+        } else {
+          continue;
+        }
+      }
 
       // If this call site is dead and it is to a readonly function, we should
       // just delete the call instead of trying to inline it, regardless of
@@ -708,7 +724,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
           continue;
         }
 
-        //IDV.AddInlining(Callee, Caller);
+        IDV.AddInlining(Callee, Caller);
 
         ++NumInlined;
 
@@ -780,10 +796,10 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
     }
   } while (LocalChange);
 
-  //for (unsigned i = 0; i < IDV.vector.size(); i++) 
-  //{
-  //  errs() << IDV.vector[i].print();
-  //} 
+  for (unsigned i = 0; i < IDV.vector.size(); i++) 
+  {
+   errs() << IDV.vector[i].print();
+  } 
 
   return Changed;
 }
