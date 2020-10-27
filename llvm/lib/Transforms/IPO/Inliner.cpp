@@ -33,6 +33,7 @@
 #include "llvm/Analysis/InlineAdvisor.h"
 #include "llvm/Analysis/InlineCost.h"
 #include "llvm/Analysis/LazyCallGraph.h"
+#include "llvm/Analysis/MemorySSAUpdater.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -40,6 +41,7 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/DiagnosticInfo.h"
@@ -58,10 +60,12 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Scalar/IndVarSimplify.h"
 #include "llvm/Transforms/Utils/CallPromotionUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/ImportedFunctionsInliningStatistics.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cassert>
@@ -70,16 +74,11 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-#include "llvm/IR/DebugInfoMetadata.h"
-#include "llvm/Transforms/Utils/LoopUtils.h"
-#include "llvm/Transforms/Scalar/IndVarSimplify.h"
-#include "llvm/Analysis/MemorySSAUpdater.h"
-
 
 #include "llvm/IR/LegacyPassManager.h"
 
-#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar.h"
 
 using namespace llvm;
 
@@ -116,8 +115,8 @@ enum class InlinerFunctionImportStatsOpts {
 
 class InliningData {
 public:
-  Function* Caller;
-  Function* Callee;
+  Function *Caller;
+  Function *Callee;
 
   std::string CalleeName;
   int CalleeBBs;
@@ -127,15 +126,17 @@ public:
   bool Filtered;
   std::string Filename;
   unsigned occurences;
-  
+
   std::string sanitizeFunctionName(StringRef FName) {
     std::string StrFName = FName.str();
-    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'), StrFName.end());
-    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'), StrFName.end());
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'),
+                   StrFName.end());
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'),
+                   StrFName.end());
     return StrFName;
   }
 
-  InliningData(Function* Callee, Function* Caller, bool Filtered = false) {
+  InliningData(Function *Callee, Function *Caller, bool Filtered = false) {
     this->Callee = Callee;
     this->Caller = Caller;
 
@@ -151,8 +152,13 @@ public:
   }
 
   std::string print() {
-    std::string str = this->Filtered ? "~> [Filtered Function]: " : "~> [Inlined Function]: ";
-    str += "|Callee:" + this->CalleeName + "|Caller:" + this->CallerName + "|CalleeBBs:" + std::to_string(this->CalleeBBs) + "|CalleeInsts:" + std::to_string(this->CalleeInsts) + "|Occurrences:" + std::to_string(this->occurences) + "|Filename:" + this->Filename;
+    std::string str =
+        this->Filtered ? "~> [Filtered Function]: " : "~> [Inlined Function]: ";
+    str += "|Callee:" + this->CalleeName + "|Caller:" + this->CallerName +
+           "|CalleeBBs:" + std::to_string(this->CalleeBBs) +
+           "|CalleeInsts:" + std::to_string(this->CalleeInsts) +
+           "|Occurrences:" + std::to_string(this->occurences) +
+           "|Filename:" + this->Filename;
     return "\n" + str + "\n";
   }
 
@@ -164,17 +170,17 @@ public:
 class InliningDataVector {
 public:
   std::vector<InliningData> vector;
-  void AddInlining(Function* Callee, Function* Caller, bool Filtered = false) {
+  void AddInlining(Function *Callee, Function *Caller, bool Filtered = false) {
     InliningData newID = InliningData(Callee, Caller, Filtered);
-    InliningData* existingID = nullptr;
+    InliningData *existingID = nullptr;
     for (unsigned i = 0; i < this->vector.size(); i++) {
-      if(newID.isEqual(vector[i])) {
+      if (newID.isEqual(vector[i])) {
         existingID = &vector[i];
         break;
       }
     }
 
-    if(existingID)
+    if (existingID)
       existingID->occurences++;
     else
       this->vector.push_back(newID);
@@ -369,11 +375,11 @@ static InlineResult inlineCallIfPossible(
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
     ValueToValueMapTy InlinedOptCallerVMap;
-    Function* InlinedOptCaller = CloneFunction(Caller, InlinedOptCallerVMap);
+    Function *InlinedOptCaller = CloneFunction(Caller, InlinedOptCallerVMap);
     CallBase *MappedCB = dyn_cast<CallBase>(InlinedOptCallerVMap[&CB]);
     InlineFunctionInfo TestIFI;
 
-    //inline Callee into InlinedOptCaller
+    // inline Callee into InlinedOptCaller
     InlineResult IR = InlineFunction(*MappedCB, TestIFI, &AAR, InsertLifetime);
     if (!IR.isSuccess()) {
       InlinedOptCaller->eraseFromParent();
@@ -382,26 +388,29 @@ static InlineResult inlineCallIfPossible(
     OptimizeFunction(InlinedOptCaller);
 
     ValueToValueMapTy OptCallerVMap;
-    Function* OptCaller = CloneFunction(Caller, OptCallerVMap);
+    Function *OptCaller = CloneFunction(Caller, OptCallerVMap);
     OptimizeFunction(OptCaller);
-  
+
     TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
     size_t SizeOptWithoutInlining = EstimateFunctionSize(OptCaller, &CallerTTI);
-    size_t SizeOptWithInlining = EstimateFunctionSize(InlinedOptCaller, &CallerTTI);
+    size_t SizeOptWithInlining =
+        EstimateFunctionSize(InlinedOptCaller, &CallerTTI);
     InlinedOptCaller->eraseFromParent();
     OptCaller->eraseFromParent();
 
-    errs() << "\n[CallerSize]: |opt_without_inline_size:" << SizeOptWithoutInlining << "|opt_with_inline_size:" << SizeOptWithInlining << "\n";
+    errs() << "\n[CallerSize]: |opt_without_inline_size:"
+           << SizeOptWithoutInlining
+           << "|opt_with_inline_size:" << SizeOptWithInlining << "\n";
 
     size_t Threshold = 0;
-    if( (SizeOptWithInlining + Threshold) >= SizeOptWithoutInlining ) {
+    if ((SizeOptWithInlining + Threshold) >= SizeOptWithoutInlining) {
       IR = InlineResult::failure("Caller size is bigger after inlining.");
       return IR;
     }
   }
 
   InlineResult IR = InlineFunction(CB, IFI, &AAR, InsertLifetime);
-  
+
   if (!IR.isSuccess()) {
     return IR;
   }
@@ -452,29 +461,30 @@ bool Profitable(CallBase &CB) {
   Function *Caller = CB.getCaller();
   Function *Callee = CB.getCalledFunction();
 
-  if (!Callee->isDiscardableIfUnused())
-  {
-    //std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-    //errs() << Str;
+  if (!Callee->isDiscardableIfUnused()) {
+    // std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " +
+    // Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName()
+    // + "\n"; errs() << Str;
     IsDiscardable = false;
   }
 
   for (Instruction &I : instructions(Callee)) {
-    if (isa<LoadInst>(&I) || isa<StoreInst>(&I)) LoadAndStores++;
+    if (isa<LoadInst>(&I) || isa<StoreInst>(&I))
+      LoadAndStores++;
   }
 
   std::set<unsigned> UsedArgumentsIndexes;
 
-  for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg)
-  {
+  for (Argument *arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg) {
     std::set<Value *> ExpandToUsers;
-    for(User* U: arg->users())
-    {
+    for (User *U : arg->users()) {
       StoreInst *SI = dyn_cast<StoreInst>(U);
-      if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+      if (isa<LoadInst>(U) ||
+          (SI && SI->getValueOperand() !=
+                     arg)) // the address operand must be the argument
       {
-        Function* F = cast<Instruction>(U)->getFunction();
-        if(F == Callee) {
+        Function *F = cast<Instruction>(U)->getFunction();
+        if (F == Callee) {
           unsigned ArgIndex = arg->getArgNo();
           UsedArgumentsIndexes.insert(ArgIndex);
         }
@@ -486,13 +496,14 @@ bool Profitable(CallBase &CB) {
       }
     }
     for (Value *V : ExpandToUsers) {
-      for(User* U: V->users())
-      {
+      for (User *U : V->users()) {
         StoreInst *SI = dyn_cast<StoreInst>(U);
-        if(isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg) ) //the address operand must be the argument
+        if (isa<LoadInst>(U) ||
+            (SI && SI->getValueOperand() !=
+                       arg)) // the address operand must be the argument
         {
-          Function* F = cast<Instruction>(U)->getFunction();
-          if(F == Callee) {
+          Function *F = cast<Instruction>(U)->getFunction();
+          if (F == Callee) {
             unsigned ArgIndex = arg->getArgNo();
             UsedArgumentsIndexes.insert(ArgIndex);
           }
@@ -500,24 +511,24 @@ bool Profitable(CallBase &CB) {
       }
     }
   }
-  
-  for(unsigned ArgId : UsedArgumentsIndexes)
-  {
-    Value* Operand = CB.getArgOperand(ArgId);
 
-    if(isa<GetElementPtrInst>(Operand))
-    {
+  for (unsigned ArgId : UsedArgumentsIndexes) {
+    Value *Operand = CB.getArgOperand(ArgId);
+
+    if (isa<GetElementPtrInst>(Operand)) {
       GetElementPtrInst *GEPI = cast<GetElementPtrInst>(Operand);
       Operand = GEPI->getPointerOperand();
     }
-    if(isa<GEPOperator>(Operand))
-    {
-      GEPOperator* GEPI = cast<GEPOperator>(Operand);
+    if (isa<GEPOperator>(Operand)) {
+      GEPOperator *GEPI = cast<GEPOperator>(Operand);
       Operand = GEPI->getPointerOperand();
     }
 
-    if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
-      //errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+    if (isa<AllocaInst>(Operand) ||
+        (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
+      // errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in
+      // Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId <<
+      // "th argument\n";
       HasAlloca = true;
     }
   }
@@ -527,8 +538,10 @@ bool Profitable(CallBase &CB) {
 
 std::string sanitizeFunctionName(StringRef FName) {
   std::string StrFName = FName.str();
-  StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'), StrFName.end());
-  StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'), StrFName.end());
+  StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'),
+                 StrFName.end());
+  StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'),
+                 StrFName.end());
   return StrFName;
 }
 
@@ -662,24 +675,18 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       OptimizationRemarkEmitter ORE(Caller);
 
       llvm::Optional<llvm::InlineCost> OIC;
-      if(EnableTrivialInlining) {
-        errs() << "\nRunning trivial inlining\n";
-        int calls = 0;
-        for(auto user = Callee->user_begin(); user != Callee->user_end(); user++) {
-          if(isa<CallInst>(*user))
-            calls++;
-        }
-
-        if(calls == 1 && Callee->isDiscardableIfUnused()) {
-          OIC = shouldInline(CB, GetInlineCost, ORE);
-          // If the policy determines that we should inline this function,
-          // delete the call instead.
-          if (!OIC)
-            continue;
-
-        } else {
+      if (EnableTrivialInlining) {
+        bool triviallyProfitable =
+            Callee->isDiscardableIfUnused() && Callee->getNumUses();
+        if (!triviallyProfitable)
           continue;
-        }
+        OIC = GetInlineCost(CB);
+      } else {
+        OIC = shouldInline(CB, GetInlineCost, ORE);
+        // If the policy determines that we should inline this function,
+        // delete the call instead.
+        if (!OIC)
+          continue;
       }
 
       // If this call site is dead and it is to a readonly function, we should
@@ -796,10 +803,9 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
     }
   } while (LocalChange);
 
-  for (unsigned i = 0; i < IDV.vector.size(); i++) 
-  {
-   errs() << IDV.vector[i].print();
-  } 
+  for (unsigned i = 0; i < IDV.vector.size(); i++) {
+    errs() << IDV.vector[i].print();
+  }
 
   return Changed;
 }
