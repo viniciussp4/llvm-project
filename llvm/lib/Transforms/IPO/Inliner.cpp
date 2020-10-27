@@ -677,7 +677,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       llvm::Optional<llvm::InlineCost> OIC;
       if (EnableTrivialInlining) {
         bool triviallyProfitable =
-            Callee->isDiscardableIfUnused() && Callee->getNumUses();
+            Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
         if (!triviallyProfitable)
           continue;
         OIC = GetInlineCost(CB);
