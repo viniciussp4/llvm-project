@@ -680,7 +680,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
             Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
         if (!triviallyProfitable)
           continue;
-        OIC = GetInlineCost(CB);
+        OIC = InlineCost::getAlways("trivial inline");
       } else {
         OIC = shouldInline(CB, GetInlineCost, ORE);
         // If the policy determines that we should inline this function,
