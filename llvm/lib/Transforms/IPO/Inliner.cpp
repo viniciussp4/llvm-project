@@ -100,8 +100,9 @@ static cl::opt<bool>
     DisableInlinedAllocaMerging("disable-inlined-alloca-merging",
                                 cl::init(false), cl::Hidden);
 
-bool EnableBacktrack = false;
+bool EnableRollback = false;
 bool EnableTrivialInlining = true;
+bool EnableRollbackOnly = false;
 
 namespace {
 
@@ -371,7 +372,9 @@ static InlineResult inlineCallIfPossible(
 
   AAResults &AAR = AARGetter(*Callee);
 
-  if (EnableBacktrack && (!Callee->isDiscardableIfUnused())) {
+  bool triviallyProfitable =
+            Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
+  if ((EnableRollback || EnableRollbackOnly) && !triviallyProfitable) {
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
     ValueToValueMapTy InlinedOptCallerVMap;
@@ -675,13 +678,23 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       OptimizationRemarkEmitter ORE(Caller);
 
       llvm::Optional<llvm::InlineCost> OIC;
-      if (EnableTrivialInlining) {
-        bool triviallyProfitable =
+      bool triviallyProfitable =
             Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
+      if (EnableTrivialInlining) {
         if (!triviallyProfitable)
           continue;
         OIC = InlineCost::getAlways("trivial inline");
-      } else {
+      } else if (EnableRollback) { //RC integrated with Trivial
+	if (triviallyProfitable)
+          OIC = InlineCost::getAlways("trivial inline");
+	else {
+          OIC = shouldInline(CB, GetInlineCost, ORE);
+          // If the policy determines that we should inline this function,
+          // delete the call instead.
+          if (!OIC)
+            continue;
+	}
+      } else if (!EnableRollbackOnly) { //baseline
         OIC = shouldInline(CB, GetInlineCost, ORE);
         // If the policy determines that we should inline this function,
         // delete the call instead.
