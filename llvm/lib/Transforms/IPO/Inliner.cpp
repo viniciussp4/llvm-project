@@ -158,9 +158,9 @@ public:
   std::string print() {
     std::string str =
         this->Filtered ? "~> [Filtered Function]: " : "~> [Inlined Function]: ";
-    str += "|Callee:" + this->CalleeName + 
-           "|Caller:" + this->CallerName +
-           "|CalleeIsDiscardableIfUnused:" + std::to_string(this->CalleeIsDiscardableIfUnused) +
+    str += "|Callee:" + this->CalleeName + "|Caller:" + this->CallerName +
+           "|CalleeIsDiscardableIfUnused:" +
+           std::to_string(this->CalleeIsDiscardableIfUnused) +
            "|CalleeBBs:" + std::to_string(this->CalleeBBs) +
            "|CalleeInsts:" + std::to_string(this->CalleeInsts) +
            "|Occurrences:" + std::to_string(this->occurences) +
@@ -378,7 +378,7 @@ static InlineResult inlineCallIfPossible(
   AAResults &AAR = AARGetter(*Callee);
 
   bool triviallyProfitable =
-            Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
+      Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
   if ((EnableRollback || EnableRollbackOnly) && !triviallyProfitable) {
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
@@ -471,7 +471,8 @@ bool Profitable(CallBase &CB) {
 
   if (!Callee->isDiscardableIfUnused()) {
     // std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " +
-    // Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName()
+    // Callee->getName().str() + " | " +
+    // Callee->getParent()->getSourceFileName()
     // + "\n"; errs() << Str;
     IsDiscardable = false;
   }
@@ -535,8 +536,8 @@ bool Profitable(CallBase &CB) {
     if (isa<AllocaInst>(Operand) ||
         (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
       // errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in
-      // Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId <<
-      // "th argument\n";
+      // Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId
+      // << "th argument\n";
       HasAlloca = true;
     }
   }
@@ -684,22 +685,22 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
 
       llvm::Optional<llvm::InlineCost> OIC;
       bool triviallyProfitable =
-            Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
+          Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
       if (EnableTrivialInlining) {
         if (!triviallyProfitable)
           continue;
         OIC = InlineCost::getAlways("trivial inline");
-      } else if (EnableRollback) { //RC integrated with Trivial
-	if (triviallyProfitable)
+      } else if (EnableRollback) { // RC integrated with Trivial
+        if (triviallyProfitable)
           OIC = InlineCost::getAlways("trivial inline");
-	else {
+        else {
           OIC = shouldInline(CB, GetInlineCost, ORE);
           // If the policy determines that we should inline this function,
           // delete the call instead.
           if (!OIC)
             continue;
-	}
-      } else if (!EnableRollbackOnly) { //baseline
+        }
+      } else if (!EnableRollbackOnly) { // baseline
         OIC = shouldInline(CB, GetInlineCost, ORE);
         // If the policy determines that we should inline this function,
         // delete the call instead.
