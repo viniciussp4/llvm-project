@@ -119,12 +119,14 @@ public:
   Function *Callee;
 
   std::string CalleeName;
+  bool CalleeIsDiscardableIfUnused;
   int CalleeBBs;
   int CalleeInsts;
 
   std::string CallerName;
   bool Filtered;
   std::string Filename;
+
   unsigned occurences;
 
   std::string sanitizeFunctionName(StringRef FName) {
@@ -141,6 +143,7 @@ public:
     this->Caller = Caller;
 
     this->CalleeName = this->sanitizeFunctionName(Callee->getName());
+    this->CalleeIsDiscardableIfUnused = Callee->isDiscardableIfUnused();
     this->CalleeBBs = Callee->getBasicBlockList().size();
     this->CalleeInsts = Callee->getInstructionCount();
 
@@ -154,7 +157,9 @@ public:
   std::string print() {
     std::string str =
         this->Filtered ? "~> [Filtered Function]: " : "~> [Inlined Function]: ";
-    str += "|Callee:" + this->CalleeName + "|Caller:" + this->CallerName +
+    str += "|Callee:" + this->CalleeName + 
+           "|Caller:" + this->CallerName +
+           "|CalleeIsDiscardableIfUnused:" + std::to_string(this->CalleeIsDiscardableIfUnused) +
            "|CalleeBBs:" + std::to_string(this->CalleeBBs) +
            "|CalleeInsts:" + std::to_string(this->CalleeInsts) +
            "|Occurrences:" + std::to_string(this->occurences) +
