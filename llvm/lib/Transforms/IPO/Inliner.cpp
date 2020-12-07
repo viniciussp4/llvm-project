@@ -101,7 +101,7 @@ static cl::opt<bool>
                                 cl::init(false), cl::Hidden);
 
 bool EnableRollback = false;
-bool EnableTrivialInlining = true;
+bool EnableTrivialInlining = false;
 bool EnableRollbackOnly = false;
 
 namespace {
@@ -406,9 +406,9 @@ static InlineResult inlineCallIfPossible(
     InlinedOptCaller->eraseFromParent();
     OptCaller->eraseFromParent();
 
-    errs() << "\n[CallerSize]: |opt_without_inline_size:"
-           << SizeOptWithoutInlining
-           << "|opt_with_inline_size:" << SizeOptWithInlining << "\n";
+    // errs() << "\n[CallerSize]: |opt_without_inline_size:"
+    //        << SizeOptWithoutInlining
+    //        << "|opt_with_inline_size:" << SizeOptWithInlining << "\n";
 
     size_t Threshold = 0;
     if ((SizeOptWithInlining + Threshold) >= SizeOptWithoutInlining) {
@@ -700,7 +700,9 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
           if (!OIC)
             continue;
         }
-      } else if (!EnableRollbackOnly) { // baseline
+      } else if (EnableRollbackOnly) {
+        OIC = InlineCost::getAlways("EnableRollbackOnly");
+      } else { // baseline
         OIC = shouldInline(CB, GetInlineCost, ORE);
         // If the policy determines that we should inline this function,
         // delete the call instead.
@@ -822,9 +824,10 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
     }
   } while (LocalChange);
 
-  for (unsigned i = 0; i < IDV.vector.size(); i++) {
-    errs() << IDV.vector[i].print();
-  }
+  // Print inlined functions
+  // for (unsigned i = 0; i < IDV.vector.size(); i++) {
+  //   errs() << IDV.vector[i].print();
+  // }
 
   return Changed;
 }
