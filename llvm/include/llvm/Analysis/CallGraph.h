@@ -254,6 +254,9 @@ public:
     CalledFunctions.emplace_back(
         Call ? Optional<WeakTrackingVH>(Call) : Optional<WeakTrackingVH>(), M);
     M->AddRef();
+    // if(this->getFunction()) {
+    //   errs() << "\n" << this->getFunction()->getName();
+    // }
   }
 
   void removeCallEdge(iterator I) {
@@ -285,7 +288,7 @@ public:
   void replaceCallEdge(CallBase &Call, CallBase &NewCall,
                        CallGraphNode *NewNode);
 
-private:
+public:
   friend class CallGraph;
 
   CallGraph *CG;

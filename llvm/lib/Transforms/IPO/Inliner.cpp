@@ -101,7 +101,7 @@ static cl::opt<bool>
                                 cl::init(false), cl::Hidden);
 
 bool EnableRollback = false;
-bool EnableTrivialInlining = false;
+bool EnableTrivialInlining = true;
 bool EnableRollbackOnly = false;
 
 namespace {
@@ -684,12 +684,12 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       OptimizationRemarkEmitter ORE(Caller);
 
       llvm::Optional<llvm::InlineCost> OIC;
-      bool triviallyProfitable =
-          Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
+      bool triviallyProfitable = Callee->getNumUses() == 1;
       if (EnableTrivialInlining) {
         if (!triviallyProfitable)
           continue;
         OIC = InlineCost::getAlways("trivial inline");
+        errs() << "\n\nInlining callee " << Callee->getName() << " on caller " << Caller->getName() << "\n";
       } else if (EnableRollback) { // RC integrated with Trivial
         if (triviallyProfitable)
           OIC = InlineCost::getAlways("trivial inline");
@@ -786,15 +786,24 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         }
       }
 
+      errs() << "Callee -> " << Callee << "\n";
+      // errs() << "Callee->use_empty() -> " << Callee->use_empty() << "\n";
+      // errs() << "Callee->hasLocalLinkage() -> " << Callee->hasLocalLinkage() << "\n";
+      // errs() << "!SCCFunctions.count(Callee) -> " << !SCCFunctions.count(Callee) << "\n";
+      errs() << "CG[Callee]->getNumReferences() == 0 -> " << (CG[Callee]->getNumReferences() == 0) << "\n";
+
+      CG[Callee]->allReferencesDropped();
+      
       // If we inlined or deleted the last possible call site to the function,
       // delete the function body now.
-      if (Callee && Callee->use_empty() && Callee->hasLocalLinkage() &&
+      if (Callee && /*Callee->use_empty() && Callee->hasLocalLinkage() &&
           // TODO: Can remove if in SCC now.
           !SCCFunctions.count(Callee) &&
           // The function may be apparently dead, but if there are indirect
           // callgraph references to the node, we cannot delete it yet, this
           // could invalidate the CGSCC iterator.
-          CG[Callee]->getNumReferences() == 0) {
+          */CG[Callee]->getNumReferences() == 0) {
+        errs() << "Deleting " << Callee->getName() << "\n";
         LLVM_DEBUG(dbgs() << "    -> Deleting dead function: "
                           << Callee->getName() << "\n");
         CallGraphNode *CalleeNode = CG[Callee];
