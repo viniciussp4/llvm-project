@@ -793,10 +793,10 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       errs() << "CG[Callee]->getNumReferences() == 0 -> " << (CG[Callee]->getNumReferences() == 0) << "\n";
 
       CG[Callee]->allReferencesDropped();
-      
+
       // If we inlined or deleted the last possible call site to the function,
       // delete the function body now.
-      if (Callee && /*Callee->use_empty() && Callee->hasLocalLinkage() &&
+      if (Callee && Callee->use_empty() && /*Callee->hasLocalLinkage() &&
           // TODO: Can remove if in SCC now.
           !SCCFunctions.count(Callee) &&
           // The function may be apparently dead, but if there are indirect
@@ -807,6 +807,7 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         LLVM_DEBUG(dbgs() << "    -> Deleting dead function: "
                           << Callee->getName() << "\n");
         CallGraphNode *CalleeNode = CG[Callee];
+        // CG.dump();
 
         // Remove any call graph edges from the callee to its callees.
         CalleeNode->removeAllCalledFunctions();
