@@ -121,7 +121,7 @@ static cl::opt<bool> DisableGEPConstOperand(
     "disable-gep-const-evaluation", cl::Hidden, cl::init(false),
     cl::desc("Disables evaluation of GetElementPtr with constant operands"));
 
-bool EnableCloning = false;
+bool EnableCloning = true;
 
 namespace {
 class InlineCostCallAnalyzer;

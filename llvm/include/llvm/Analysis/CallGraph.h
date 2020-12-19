@@ -254,9 +254,6 @@ public:
     CalledFunctions.emplace_back(
         Call ? Optional<WeakTrackingVH>(Call) : Optional<WeakTrackingVH>(), M);
     M->AddRef();
-    // if(this->getFunction()) {
-    //   errs() << "\n" << this->getFunction()->getName();
-    // }
   }
 
   void removeCallEdge(iterator I) {
