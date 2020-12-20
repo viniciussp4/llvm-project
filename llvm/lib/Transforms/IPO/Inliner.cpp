@@ -100,8 +100,8 @@ static cl::opt<bool>
     DisableInlinedAllocaMerging("disable-inlined-alloca-merging",
                                 cl::init(false), cl::Hidden);
 
-bool EnableRollback = true;
-bool EnableTrivialInlining = false;
+bool EnableRollback = false;
+bool EnableTrivialInlining = true;
 bool EnableRollbackOnly = false;
 
 namespace {
@@ -379,7 +379,8 @@ static InlineResult inlineCallIfPossible(
 
   bool triviallyProfitable =
       Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
-  if ((EnableRollback || EnableRollbackOnly) && !triviallyProfitable) {
+    
+  if ( ((EnableRollback || EnableRollbackOnly) && !Callee->isDiscardableIfUnused()) && !triviallyProfitable) {
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
     ValueToValueMapTy InlinedOptCallerVMap;
@@ -684,9 +685,9 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       OptimizationRemarkEmitter ORE(Caller);
 
       llvm::Optional<llvm::InlineCost> OIC;
-      bool triviallyProfitable = Callee->getNumUses() == 1;
+      bool triviallyProfitable = Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
       if (EnableTrivialInlining) {
-        if (!triviallyProfitable)
+        if (Callee->getNumUses() != 1)
           continue;
         OIC = InlineCost::getAlways("trivial inline");
         errs() << "\n\nInlining callee " << Callee->getName() << " on caller " << Caller->getName() << "\n";
