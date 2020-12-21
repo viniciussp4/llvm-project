@@ -101,8 +101,8 @@ static cl::opt<bool>
                                 cl::init(false), cl::Hidden);
 
 bool EnableRollback = false;
-bool EnableTrivialInlining = true;
-bool EnableRollbackOnly = false;
+bool EnableTrivialInlining = false;
+bool EnableRollbackOnly = true;
 
 namespace {
 
@@ -380,7 +380,7 @@ static InlineResult inlineCallIfPossible(
   bool triviallyProfitable =
       Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
     
-  if ( ((EnableRollback || EnableRollbackOnly) && !Callee->isDiscardableIfUnused()) && !triviallyProfitable) {
+  if (((EnableRollback && !Callee->isDiscardableIfUnused()) || EnableRollbackOnly) && !triviallyProfitable) {
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
     ValueToValueMapTy InlinedOptCallerVMap;
