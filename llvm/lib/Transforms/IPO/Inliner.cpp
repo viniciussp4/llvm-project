@@ -100,9 +100,13 @@ static cl::opt<bool>
     DisableInlinedAllocaMerging("disable-inlined-alloca-merging",
                                 cl::init(false), cl::Hidden);
 
-bool EnableRollback = false;
-bool EnableTrivialInlining = false;
-bool EnableRollbackOnly = false;
+cl::opt<bool> EnableRollback ("inline-rollback", cl::desc("Enable rollback approach"));
+cl::opt<bool> EnableRollbackOnly ("inline-rollback-only", cl::desc("Enable rollback only approach"));
+cl::opt<bool> EnableTrivialInlining ("inline-aggressive-trivial", cl::desc("Enable aggressive trivial inlining (use with LTO)"));
+
+// bool EnableRollback = false;
+// bool EnableTrivialInlining = false;
+// bool EnableRollbackOnly = false;
 
 namespace {
 
