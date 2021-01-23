@@ -22,8 +22,8 @@
 #include "llvm/Analysis/CodeMetrics.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/InstructionSimplify.h"
-#include "llvm/IR/InstIterator.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/MemorySSAUpdater.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
@@ -35,6 +35,7 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/GlobalAlias.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Operator.h"
@@ -44,11 +45,10 @@
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Analysis/MemorySSAUpdater.h"
 
 #include "llvm/IR/LegacyPassManager.h"
-#include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar.h"
 
 using namespace llvm;
 
@@ -180,7 +180,6 @@ protected:
   /// The called function and a post-inlined clone.
   Function &OriginalCallee;
   Function &SimplifiedCallee;
-
 
   // Cache the DataLayout since we use it a lot.
   const DataLayout &DL;
@@ -405,19 +404,20 @@ protected:
   bool visitUnreachableInst(UnreachableInst &I);
 
 public:
-  CallAnalyzer(
-      Function &OriginalCallee, Function &OptCallee, CallBase &Call, const TargetTransformInfo &TTI,
-      function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
-      function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
-      ProfileSummaryInfo *PSI = nullptr,
-      OptimizationRemarkEmitter *ORE = nullptr)
+  CallAnalyzer(Function &OriginalCallee, Function &OptCallee, CallBase &Call,
+               const TargetTransformInfo &TTI,
+               function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
+               function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
+               ProfileSummaryInfo *PSI = nullptr,
+               OptimizationRemarkEmitter *ORE = nullptr)
       : TTI(TTI), GetAssumptionCache(GetAssumptionCache), GetBFI(GetBFI),
-        PSI(PSI), OriginalCallee(OriginalCallee), SimplifiedCallee(OptCallee), DL(OriginalCallee.getParent()->getDataLayout()), ORE(ORE),
+        PSI(PSI), OriginalCallee(OriginalCallee), SimplifiedCallee(OptCallee),
+        DL(OriginalCallee.getParent()->getDataLayout()), ORE(ORE),
         CandidateCall(Call), EnableLoadElimination(true) {}
 
   InlineResult analyze();
 
-  Optional<Constant*> getSimplifiedValue(Instruction *I) {
+  Optional<Constant *> getSimplifiedValue(Instruction *I) {
     if (SimplifiedValues.find(I) != SimplifiedValues.end())
       return SimplifiedValues[I];
     return None;
@@ -641,8 +641,10 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
 
   std::string sanitizeFunctionName(StringRef FName) {
     std::string StrFName = FName.str();
-    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'), StrFName.end());
-    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'), StrFName.end());
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\n'),
+                   StrFName.end());
+    StrFName.erase(std::remove(StrFName.begin(), StrFName.end(), '\r'),
+                   StrFName.end());
     return StrFName;
   }
 
@@ -652,35 +654,40 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     unsigned LoadAndStores = 0;
 
     Function *Caller = CandidateCall.getCaller();
-    Function *Callee = &SimplifiedCallee; //It's the optimized Callee, inherited from CallAnalyzer, in case of questions check the InlineCostCallAnalyzer constructor
+    Function *Callee =
+        &SimplifiedCallee; // It's the optimized Callee, inherited from
+                           // CallAnalyzer, in case of questions check the
+                           // InlineCostCallAnalyzer constructor
 
-    if (!Callee->isDiscardableIfUnused())
-    {
-      //std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " + Callee->getName().str() + " | " + Callee->getParent()->getSourceFileName() + "\n";
-      //errs() << Str;
+    if (!Callee->isDiscardableIfUnused()) {
+      // std::string Str = "\n~>[Profitable] !isDiscardableIfUnused: " +
+      // Callee->getName().str() + " | " +
+      // Callee->getParent()->getSourceFileName() + "\n"; errs() << Str;
       IsDiscardable = false;
-    } 
+    }
 
     for (Instruction &I : instructions(Callee)) {
       BasicBlock *BB = I.getParent();
-      if (!DeadBlocks.count(BB) && (isa<LoadInst>(&I) || isa<StoreInst>(&I)) ) LoadAndStores++;
+      if (!DeadBlocks.count(BB) && (isa<LoadInst>(&I) || isa<StoreInst>(&I)))
+        LoadAndStores++;
     }
 
     std::set<unsigned> UsedArgumentsIndexes;
 
-    for(Argument* arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg)
-    {
+    for (Argument *arg = Callee->arg_begin(); arg != Callee->arg_end(); ++arg) {
       std::set<Value *> ExpandToUsers;
-      for(User* U: arg->users())
-      {
+      for (User *U : arg->users()) {
         Instruction *I = dyn_cast<Instruction>(U);
         bool isDeadBlock = (I && DeadBlocks.count(I->getParent()));
 
         StoreInst *SI = dyn_cast<StoreInst>(U);
-        if(!isDeadBlock && (isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg)) ) //the address operand must be the argument
+        if (!isDeadBlock &&
+            (isa<LoadInst>(U) ||
+             (SI && SI->getValueOperand() !=
+                        arg))) // the address operand must be the argument
         {
-          Function* F = cast<Instruction>(U)->getFunction();
-          if(F == Callee) {
+          Function *F = cast<Instruction>(U)->getFunction();
+          if (F == Callee) {
             unsigned ArgIndex = arg->getArgNo();
             UsedArgumentsIndexes.insert(ArgIndex);
           }
@@ -692,16 +699,18 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
         }
       }
       for (Value *V : ExpandToUsers) {
-        for(User* U: V->users())
-        {
+        for (User *U : V->users()) {
           Instruction *I = dyn_cast<Instruction>(U);
           bool isDeadBlock = (I && DeadBlocks.count(I->getParent()));
 
           StoreInst *SI = dyn_cast<StoreInst>(U);
-          if(!isDeadBlock && (isa<LoadInst>(U) || (SI && SI->getValueOperand()!=arg)) ) //the address operand must be the argument
+          if (!isDeadBlock &&
+              (isa<LoadInst>(U) ||
+               (SI && SI->getValueOperand() !=
+                          arg))) // the address operand must be the argument
           {
-            Function* F = cast<Instruction>(U)->getFunction();
-            if(F == Callee) {
+            Function *F = cast<Instruction>(U)->getFunction();
+            if (F == Callee) {
               unsigned ArgIndex = arg->getArgNo();
               UsedArgumentsIndexes.insert(ArgIndex);
             }
@@ -709,32 +718,38 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
         }
       }
     }
-    
-    for(unsigned ArgId : UsedArgumentsIndexes)
-    {
-      Value* Operand = CandidateCall.getArgOperand(ArgId);
 
-      if(isa<GetElementPtrInst>(Operand))
-      {
+    for (unsigned ArgId : UsedArgumentsIndexes) {
+      Value *Operand = CandidateCall.getArgOperand(ArgId);
+
+      if (isa<GetElementPtrInst>(Operand)) {
         GetElementPtrInst *GEPI = cast<GetElementPtrInst>(Operand);
         Operand = GEPI->getPointerOperand();
       }
-      if(isa<GEPOperator>(Operand))
-      {
-        GEPOperator* GEPI = cast<GEPOperator>(Operand);
+      if (isa<GEPOperator>(Operand)) {
+        GEPOperator *GEPI = cast<GEPOperator>(Operand);
         Operand = GEPI->getPointerOperand();
       }
 
-      if(isa<AllocaInst>(Operand) || (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
-        //errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId << "th argument\n";
+      if (isa<AllocaInst>(Operand) ||
+          (isa<Argument>(Operand) && (Caller->getNumUses() > 0))) {
+        // errs() << "\n[Profitable] Callee '" << Callee->getName() << "', in
+        // Caller '" << Caller->getName() << "', uses a Alloca in the " << ArgId
+        // << "th argument\n";
         HasAlloca = true;
       }
     }
 
-    if(IsDiscardable || HasAlloca || LoadAndStores == 0) {
+    if (IsDiscardable || HasAlloca || LoadAndStores == 0) {
       return true;
     } else {
-      //errs() << "~> [Filtered Function]: " << "|Callee:" << sanitizeFunctionName(Callee->getName()) << "|Caller:" << sanitizeFunctionName(Caller->getName()) << "|CalleeBBs:" << std::to_string(Callee->getBasicBlockList().size()) << "|CalleeInsts:" << std::to_string(Callee->getInstructionCount()) << "|Occurrences: 1" << "|Filename:" << Callee->getParent()->getSourceFileName();
+      // errs() << "~> [Filtered Function]: " << "|Callee:" <<
+      // sanitizeFunctionName(Callee->getName()) << "|Caller:" <<
+      // sanitizeFunctionName(Caller->getName()) << "|CalleeBBs:" <<
+      // std::to_string(Callee->getBasicBlockList().size()) << "|CalleeInsts:"
+      // << std::to_string(Callee->getInstructionCount()) << "|Occurrences: 1"
+      // <<
+      // "|Filename:" << Callee->getParent()->getSourceFileName();
       return false;
     }
   }
@@ -767,7 +782,7 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
     else if (NumVectorInstructions <= NumInstructions / 2)
       Threshold -= VectorBonus / 2;
 
-    if ( (IgnoreThreshold || Cost < std::max(1, Threshold)) /*&& Profitable()*/ )
+    if ((IgnoreThreshold || Cost < std::max(1, Threshold)) /*&& Profitable()*/)
       return InlineResult::success();
     return InlineResult::failure("Cost over threshold.");
   }
@@ -828,14 +843,15 @@ class InlineCostCallAnalyzer final : public CallAnalyzer {
 
 public:
   InlineCostCallAnalyzer(
-      Function &OriginalCallee, Function &OptCallee, CallBase &Call, const InlineParams &Params,
-      const TargetTransformInfo &TTI,
+      Function &OriginalCallee, Function &OptCallee, CallBase &Call,
+      const InlineParams &Params, const TargetTransformInfo &TTI,
       function_ref<AssumptionCache &(Function &)> GetAssumptionCache,
       function_ref<BlockFrequencyInfo &(Function &)> GetBFI = nullptr,
       ProfileSummaryInfo *PSI = nullptr,
       OptimizationRemarkEmitter *ORE = nullptr, bool BoostIndirect = true,
       bool IgnoreThreshold = false)
-      : CallAnalyzer(OriginalCallee, OptCallee, Call, TTI, GetAssumptionCache, GetBFI, PSI, ORE),
+      : CallAnalyzer(OriginalCallee, OptCallee, Call, TTI, GetAssumptionCache,
+                     GetBFI, PSI, ORE),
         ComputeFullInlineCost(OptComputeFullInlineCost ||
                               Params.ComputeFullInlineCost || ORE),
         Params(Params), Threshold(Params.DefaultThreshold),
@@ -874,8 +890,8 @@ void CallAnalyzer::disableSROAForArg(AllocaInst *SROAArg) {
   disableLoadElimination();
 }
 
-void InlineCostAnnotationWriter::emitInstructionAnnot(const Instruction *I,
-                                                formatted_raw_ostream &OS) {
+void InlineCostAnnotationWriter::emitInstructionAnnot(
+    const Instruction *I, formatted_raw_ostream &OS) {
   // The cost of inlining of the given instruction is printed always.
   // The threshold delta is printed only when it is non-zero. It happens
   // when we decided to give a bonus at a particular instruction.
@@ -1136,11 +1152,11 @@ bool CallAnalyzer::visitGetElementPtr(GetElementPtrInst &I) {
 
   if (!DisableGEPConstOperand)
     if (simplifyInstruction(I, [&](SmallVectorImpl<Constant *> &COps) {
-        SmallVector<Constant *, 2> Indices;
-        for (unsigned int Index = 1 ; Index < COps.size() ; ++Index)
+          SmallVector<Constant *, 2> Indices;
+          for (unsigned int Index = 1; Index < COps.size(); ++Index)
             Indices.push_back(COps[Index]);
-        return ConstantExpr::getGetElementPtr(I.getSourceElementType(), COps[0],
-                                              Indices, I.isInBounds());
+          return ConstantExpr::getGetElementPtr(
+              I.getSourceElementType(), COps[0], Indices, I.isInBounds());
         }))
       return true;
 
@@ -1518,8 +1534,9 @@ void InlineCostCallAnalyzer::updateThreshold(CallBase &Call, Function &Callee) {
   SingleBBBonus = Threshold * SingleBBBonusPercent / 100;
   VectorBonus = Threshold * VectorBonusPercent / 100;
 
-  bool OnlyOneCallAndLocalLinkage =
-      OriginalCallee.hasLocalLinkage() && OriginalCallee.hasOneUse() && &OriginalCallee == Call.getCalledFunction();
+  bool OnlyOneCallAndLocalLinkage = OriginalCallee.hasLocalLinkage() &&
+                                    OriginalCallee.hasOneUse() &&
+                                    &OriginalCallee == Call.getCalledFunction();
   // If there is only one call of the function, and it has internal linkage,
   // the cost of inlining it drops dramatically. It may seem odd to update
   // Cost in updateThreshold, but the bonus depends on the logic in this method.
@@ -1881,9 +1898,9 @@ bool CallAnalyzer::visitSelectInst(SelectInst &SI) {
   }
 
   // Select condition is a constant.
-  Value *SelectedV = CondC->isAllOnesValue()
-                         ? TrueVal
-                         : (CondC->isNullValue()) ? FalseVal : nullptr;
+  Value *SelectedV = CondC->isAllOnesValue()  ? TrueVal
+                     : (CondC->isNullValue()) ? FalseVal
+                                              : nullptr;
   if (!SelectedV) {
     // Condition is a vector constant that is not all 1s or all 0s.  If all
     // operands are constants, ConstantExpr::getSelect() can handle the cases
@@ -2063,7 +2080,8 @@ CallAnalyzer::analyzeBlock(BasicBlock *BB,
         ORE->emit([&]() {
           return OptimizationRemarkMissed(DEBUG_TYPE, "NeverInline",
                                           &CandidateCall)
-                 << NV("Callee", &OriginalCallee) << " has uninlinable pattern ("
+                 << NV("Callee", &OriginalCallee)
+                 << " has uninlinable pattern ("
                  << NV("InlineResult", IR.getFailureReason())
                  << ") and cost is not fully computed";
         });
@@ -2203,7 +2221,8 @@ InlineResult CallAnalyzer::analyze() {
   // Populate our simplified values by mapping from function arguments to call
   // arguments with known important simplifications.
   auto CAI = CandidateCall.arg_begin();
-  for (Function::arg_iterator FAI = SimplifiedCallee.arg_begin(), FAE = SimplifiedCallee.arg_end();
+  for (Function::arg_iterator FAI = SimplifiedCallee.arg_begin(),
+                              FAE = SimplifiedCallee.arg_end();
        FAI != FAE; ++FAI, ++CAI) {
     assert(CAI != CandidateCall.arg_end());
     if (Constant *C = dyn_cast<Constant>(CAI))
@@ -2229,7 +2248,8 @@ InlineResult CallAnalyzer::analyze() {
   // the ephemeral values multiple times (and they're completely determined by
   // the callee, so this is purely duplicate work).
   SmallPtrSet<const Value *, 32> EphValues;
-  CodeMetrics::collectEphemeralValues(&SimplifiedCallee, &GetAssumptionCache(SimplifiedCallee), EphValues);
+  CodeMetrics::collectEphemeralValues(
+      &SimplifiedCallee, &GetAssumptionCache(SimplifiedCallee), EphValues);
 
   // The worklist of live basic blocks in the callee *after* inlining. We avoid
   // adding basic blocks of the callee which can be proven to be dead for this
@@ -2309,8 +2329,9 @@ InlineResult CallAnalyzer::analyze() {
     onBlockAnalyzed(BB);
   }
 
-  bool OnlyOneCallAndLocalLinkage = OriginalCallee.hasLocalLinkage() && OriginalCallee.hasOneUse() &&
-                                    &OriginalCallee == CandidateCall.getCalledFunction();
+  bool OnlyOneCallAndLocalLinkage =
+      OriginalCallee.hasLocalLinkage() && OriginalCallee.hasOneUse() &&
+      &OriginalCallee == CandidateCall.getCalledFunction();
   // If this is a noduplicate call, we can still inline as long as
   // inlining this would cause the removal of the caller (so the instruction
   // is not actually duplicated, just moved).
@@ -2342,9 +2363,7 @@ void InlineCostCallAnalyzer::print() {
 
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
 /// Dump stats about this call's analysis.
-LLVM_DUMP_METHOD void InlineCostCallAnalyzer::dump() {
-  print();
-}
+LLVM_DUMP_METHOD void InlineCostCallAnalyzer::dump() { print(); }
 #endif
 
 /// Test that there are no attribute conflicts between Caller and Callee
@@ -2422,7 +2441,8 @@ Optional<int> llvm::getInliningCostEstimate(
                                /*ComputeFullInlineCost*/ true,
                                /*EnableDeferral*/ true};
 
-  InlineCostCallAnalyzer CA(*Call.getCalledFunction(), *Call.getCalledFunction(), Call, Params, CalleeTTI,
+  InlineCostCallAnalyzer CA(*Call.getCalledFunction(),
+                            *Call.getCalledFunction(), Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE, true,
                             /*IgnoreThreshold*/ true);
   auto R = CA.analyze();
@@ -2492,36 +2512,40 @@ Optional<InlineResult> llvm::getAttributeBasedInliningDecision(
   return None;
 }
 
-Function* GetOptCallee(Function *Callee, CallBase &CB, 
-    TargetTransformInfo *CalleeTTI, 
-    function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
-    function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
+Function *
+GetOptCallee(Function *Callee, CallBase &CB, TargetTransformInfo *CalleeTTI,
+             function_ref<const TargetLibraryInfo &(Function &)> GetTLI,
+             function_ref<AssumptionCache &(Function &)> GetAssumptionCache) {
 
   Function *Caller = CB.getCaller();
-  std::map<unsigned, Value*> ConstantArguments;
+  std::map<unsigned, Value *> ConstantArguments;
 
   // errs() << "\nCallee original:\n";
   // Callee->dump();
   // errs() << "\n";
-  
-  ValueToValueMapTy VMap;
-  Function* ClonedCallee = CloneFunction(Callee, VMap);
 
-  for(unsigned i = 0; i < CB.getNumArgOperands(); i++) {
-    Constant* c = dyn_cast<Constant>(CB.getArgOperand(i));
-    GlobalValue* gv = dyn_cast<GlobalValue>(CB.getArgOperand(i));
-    if(c) {
-      //errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a constant. | " << Callee->getParent()->getSourceFileName() << "\n";
+  ValueToValueMapTy VMap;
+  Function *ClonedCallee = CloneFunction(Callee, VMap);
+
+  for (unsigned i = 0; i < CB.getNumArgOperands(); i++) {
+    Constant *c = dyn_cast<Constant>(CB.getArgOperand(i));
+    GlobalValue *gv = dyn_cast<GlobalValue>(CB.getArgOperand(i));
+    if (c) {
+      // errs() << "\n[GetOptCallee] " << i << "th argument of Callee " <<
+      // Callee->getName() << ", in Caller " << Caller->getName() << ", is a
+      // constant. | " << Callee->getParent()->getSourceFileName() << "\n";
       ConstantArguments[i] = c;
     } else if (gv) {
-      //errs() << "\n[GetOptCallee] " << i << "th argument of Callee " << Callee->getName() << ", in Caller " << Caller->getName() << ", is a Global Value. | " << Callee->getParent()->getSourceFileName() << "\n";
+      // errs() << "\n[GetOptCallee] " << i << "th argument of Callee " <<
+      // Callee->getName() << ", in Caller " << Caller->getName() << ", is a
+      // Global Value. | " << Callee->getParent()->getSourceFileName() << "\n";
       ConstantArguments[i] = gv;
     }
   }
 
-  for(auto &ConstantArgument : ConstantArguments) {
+  for (auto &ConstantArgument : ConstantArguments) {
     unsigned argIndex = ConstantArgument.first;
-    Value* argument = ConstantArgument.second;
+    Value *argument = ConstantArgument.second;
 
     ClonedCallee->getArg(argIndex)->replaceAllUsesWith(argument);
   }
@@ -2562,18 +2586,18 @@ InlineCost llvm::getInlineCost(
                           << "... (caller:" << Call.getCaller()->getName()
                           << ")\n");
 
+  Function *OptCallee = Callee;
 
-  Function* OptCallee = Callee;
-  
   if (EnableCloning && !Callee->isVarArg())
-    OptCallee = GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
-  
-  InlineCostCallAnalyzer CA (*Callee, *OptCallee, Call, Params, CalleeTTI,
+    OptCallee =
+        GetOptCallee(Callee, Call, &CalleeTTI, GetTLI, GetAssumptionCache);
+
+  InlineCostCallAnalyzer CA(*Callee, *OptCallee, Call, Params, CalleeTTI,
                             GetAssumptionCache, GetBFI, PSI, ORE);
 
   InlineResult ShouldInline = CA.analyze();
 
-  if (EnableCloning && OptCallee!=Callee)
+  if (EnableCloning && OptCallee != Callee)
     OptCallee->eraseFromParent();
 
   LLVM_DEBUG(CA.dump());
@@ -2730,8 +2754,8 @@ PreservedAnalyses
 InlineCostAnnotationPrinterPass::run(Function &F,
                                      FunctionAnalysisManager &FAM) {
   PrintInstructionComments = true;
-  std::function<AssumptionCache &(Function &)> GetAssumptionCache = [&](
-      Function &F) -> AssumptionCache & {
+  std::function<AssumptionCache &(Function &)> GetAssumptionCache =
+      [&](Function &F) -> AssumptionCache & {
     return FAM.getResult<AssumptionAnalysis>(F);
   };
   Module *M = F.getParent();
@@ -2744,15 +2768,16 @@ InlineCostAnnotationPrinterPass::run(Function &F,
   // We can add a flag which determines InlineParams for this run. Right now,
   // the default InlineParams are used.
   const InlineParams Params = llvm::getInlineParams();
-    for (BasicBlock &BB : F) {
+  for (BasicBlock &BB : F) {
     for (Instruction &I : BB) {
       if (CallInst *CI = dyn_cast<CallInst>(&I)) {
         Function *CalledFunction = CI->getCalledFunction();
         if (!CalledFunction || CalledFunction->isDeclaration())
           continue;
         OptimizationRemarkEmitter ORE(CalledFunction);
-        InlineCostCallAnalyzer ICCA(*CalledFunction, *CalledFunction, *CI, Params, TTI,
-                                    GetAssumptionCache, nullptr, &PSI, &ORE);
+        InlineCostCallAnalyzer ICCA(*CalledFunction, *CalledFunction, *CI,
+                                    Params, TTI, GetAssumptionCache, nullptr,
+                                    &PSI, &ORE);
         ICCA.analyze();
         OS << "      Analyzing call of " << CalledFunction->getName()
            << "... (caller:" << CI->getCaller()->getName() << ")\n";

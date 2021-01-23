@@ -102,7 +102,7 @@ static cl::opt<bool>
 
 bool EnableRollback = false;
 bool EnableTrivialInlining = false;
-bool EnableRollbackOnly = true;
+bool EnableRollbackOnly = false;
 
 namespace {
 
@@ -379,8 +379,10 @@ static InlineResult inlineCallIfPossible(
 
   bool triviallyProfitable =
       Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
-    
-  if (((EnableRollback && !Callee->isDiscardableIfUnused()) || EnableRollbackOnly) && !triviallyProfitable) {
+
+  if (((EnableRollback && !Callee->isDiscardableIfUnused()) ||
+       EnableRollbackOnly) &&
+      !triviallyProfitable) {
     // Try to inline the function.  Get the list of static allocas that were
     // inlined.
     ValueToValueMapTy InlinedOptCallerVMap;
@@ -685,12 +687,20 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       OptimizationRemarkEmitter ORE(Caller);
 
       llvm::Optional<llvm::InlineCost> OIC;
-      bool triviallyProfitable = Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
+      // Check if function is marked how not inline
+      InlineCost IC = GetInlineCost(CB);
+      if (!IC && IC.isNever()) {
+        continue;
+      }
+
+      bool triviallyProfitable =
+          Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
       if (EnableTrivialInlining) {
         if (Callee->getNumUses() != 1)
           continue;
         OIC = InlineCost::getAlways("trivial inline");
-        errs() << "\n\nInlining callee " << Callee->getName() << " on caller " << Caller->getName() << "\n";
+        errs() << "\n\nInlining callee " << Callee->getName() << " on caller "
+               << Caller->getName() << "\n";
       } else if (EnableRollback) { // RC integrated with Trivial
         if (triviallyProfitable)
           OIC = InlineCost::getAlways("trivial inline");
@@ -787,18 +797,19 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         }
       }
 
-      if(EnableTrivialInlining)
+      if (EnableTrivialInlining)
         CG[Callee]->allReferencesDropped();
 
       // If we inlined or deleted the last possible call site to the function,
       // delete the function body now.
-      if (Callee && Callee->use_empty() && (EnableTrivialInlining || (Callee->hasLocalLinkage() &&
-          // TODO: Can remove if in SCC now.
-          !SCCFunctions.count(Callee) ))
+      if (Callee && Callee->use_empty() &&
+          (EnableTrivialInlining || (Callee->hasLocalLinkage() &&
+                                     // TODO: Can remove if in SCC now.
+                                     !SCCFunctions.count(Callee)))
           // The function may be apparently dead, but if there are indirect
           // callgraph references to the node, we cannot delete it yet, this
           // could invalidate the CGSCC iterator.
-         && CG[Callee]->getNumReferences() == 0) {
+          && CG[Callee]->getNumReferences() == 0) {
         // errs() << "Deleting " << Callee->getName() << "\n";
         LLVM_DEBUG(dbgs() << "    -> Deleting dead function: "
                           << Callee->getName() << "\n");
@@ -830,9 +841,9 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
   } while (LocalChange);
 
   // Print inlined functions
-  // for (unsigned i = 0; i < IDV.vector.size(); i++) {
-  //   errs() << IDV.vector[i].print();
-  // }
+  for (unsigned i = 0; i < IDV.vector.size(); i++) {
+    errs() << IDV.vector[i].print();
+  }
 
   return Changed;
 }
