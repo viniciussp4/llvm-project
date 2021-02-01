@@ -71,6 +71,11 @@ RunLoopRerolling("reroll-loops", cl::Hidden,
 static cl::opt<bool> RunNewGVN("enable-newgvn", cl::init(false), cl::Hidden,
                                cl::desc("Run the NewGVN pass"));
 
+static cl::opt<bool>
+  DisableInlining("disable-all-inlining", cl::init(false), cl::Hidden,
+                 cl::desc("Disable inlining"));
+
+
 // Experimental option to use CFL-AA
 enum class CFLAAType { None, Steensgaard, Andersen, Both };
 static cl::opt<CFLAAType>
@@ -499,7 +504,7 @@ void PassManagerBuilder::populateModulePassManager(
   // if enabled, the function merging pass.
   if (OptLevel == 0) {
     addPGOInstrPasses(MPM);
-    if (Inliner) {
+    if (Inliner && !DisableInlining) {
       MPM.add(Inliner);
       Inliner = nullptr;
     }
@@ -609,7 +614,7 @@ void PassManagerBuilder::populateModulePassManager(
   // Start of CallGraph SCC passes.
   MPM.add(createPruneEHPass()); // Remove dead EH info
   bool RunInliner = false;
-  if (Inliner) {
+  if (Inliner && !DisableInlining) {
     MPM.add(Inliner);
     Inliner = nullptr;
     RunInliner = true;
@@ -953,7 +958,7 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
 
   // Inline small functions
   bool RunInliner = Inliner;
-  if (RunInliner) {
+  if (RunInliner && !DisableInlining) {
     PM.add(Inliner);
     Inliner = nullptr;
   }
@@ -973,7 +978,7 @@ void PassManagerBuilder::addLTOOptimizationPasses(legacy::PassManagerBase &PM) {
     PM.add(createOpenMPOptLegacyPass());
 
   // Optimize globals again if we ran the inliner.
-  if (RunInliner)
+  if (RunInliner && !DisableInlining)
     PM.add(createGlobalOptimizerPass());
   PM.add(createGlobalDCEPass()); // Remove dead functions.
 
@@ -1219,7 +1224,7 @@ void LLVMPassManagerBuilderPopulateLTOPassManager(LLVMPassManagerBuilderRef PMB,
 
   // A small backwards compatibility hack. populateLTOPassManager used to take
   // an RunInliner option.
-  if (RunInliner && !Builder->Inliner)
+  if (RunInliner && !Builder->Inliner && !DisableInlining)
     Builder->Inliner = createFunctionInliningPass();
 
   Builder->populateLTOPassManager(*LPM);

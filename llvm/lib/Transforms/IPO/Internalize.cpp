@@ -130,6 +130,8 @@ bool InternalizePass::maybeInternalize(
       return false;
   }
 
+  if (GV.getName()==std::string("main")) return false;
+
   GV.setVisibility(GlobalValue::DefaultVisibility);
   GV.setLinkage(GlobalValue::InternalLinkage);
   return true;
