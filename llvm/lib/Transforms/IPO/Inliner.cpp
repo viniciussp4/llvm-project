@@ -354,8 +354,8 @@ void OptimizeFunction(Function *F) {
   FPM.doFinalization();
 }
 
-size_t EstimateFunctionSize(Function *F, TargetTransformInfo *TTI) {
-  size_t size = 0;
+long EstimateFunctionSize(Function *F, TargetTransformInfo *TTI) {
+  long size = 0;
   for (Instruction &I : instructions(F)) {
     size += TTI->getInstructionCost(
         &I, TargetTransformInfo::TargetCostKind::TCK_CodeSize);
@@ -407,8 +407,8 @@ static InlineResult inlineCallIfPossible(
     OptimizeFunction(OptCaller);
 
     TargetTransformInfo CallerTTI(Caller->getParent()->getDataLayout());
-    size_t SizeOptWithoutInlining = EstimateFunctionSize(OptCaller, &CallerTTI);
-    size_t SizeOptWithInlining =
+    long SizeOptWithoutInlining = EstimateFunctionSize(OptCaller, &CallerTTI);
+    long SizeOptWithInlining =
         EstimateFunctionSize(InlinedOptCaller, &CallerTTI);
     InlinedOptCaller->eraseFromParent();
     OptCaller->eraseFromParent();
@@ -417,7 +417,10 @@ static InlineResult inlineCallIfPossible(
     //        << SizeOptWithoutInlining
     //        << "|opt_with_inline_size:" << SizeOptWithInlining << "\n";
 
-    size_t Threshold = 0;
+    long Threshold = 0;
+    if(EnableTrivialInlining) {
+      Threshold = -900;
+    }
     if ((SizeOptWithInlining + Threshold) >= SizeOptWithoutInlining) {
       IR = InlineResult::failure("Caller size is bigger after inlining.");
       return IR;
@@ -807,9 +810,9 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       // If we inlined or deleted the last possible call site to the function,
       // delete the function body now.
       if (Callee && Callee->use_empty() &&
-          (EnableTrivialInlining || (Callee->hasLocalLinkage() &&
+          (EnableTrivialInlining || Callee->hasLocalLinkage()) &&
                                      // TODO: Can remove if in SCC now.
-                                     !SCCFunctions.count(Callee)))
+                                     !SCCFunctions.count(Callee)
           // The function may be apparently dead, but if there are indirect
           // callgraph references to the node, we cannot delete it yet, this
           // could invalidate the CGSCC iterator.
