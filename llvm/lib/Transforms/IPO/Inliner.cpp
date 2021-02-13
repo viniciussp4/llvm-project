@@ -418,10 +418,8 @@ static InlineResult inlineCallIfPossible(
     //        << "|opt_with_inline_size:" << SizeOptWithInlining << "\n";
 
     long Threshold = 0;
-    if(EnableTrivialInlining) {
-      Threshold = -900;
-    }
     if ((SizeOptWithInlining + Threshold) >= SizeOptWithoutInlining) {
+      // errs() << "[Rollback Block]: |InlineSize:" << SizeOptWithInlining << "|CalleeInsts:" << Callee->getInstructionCount() << "|CallerInsts:" << Caller->getInstructionCount() << "\n"; 
       IR = InlineResult::failure("Caller size is bigger after inlining.");
       return IR;
     }
@@ -703,8 +701,10 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       bool triviallyProfitable =
           Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
       if (EnableTrivialInlining) {
-        if (Callee->getNumUses() != 1)
+        uint totalInsts = Callee->getInstructionCount() + Caller->getInstructionCount();
+        if (Callee->getNumUses() != 1 || totalInsts > 5000)
           continue;
+        // errs() << "[Trivial]: Callee " << Callee->getName() << " (" << Callee->getInstructionCount() << ") on Caller " << Caller->getName() << " (" << Caller->getInstructionCount() << ") = " << totalInsts << "\n"; 
         OIC = InlineCost::getAlways("trivial inline");
         errs() << "\n\nInlining callee " << Callee->getName() << " on caller "
                << Caller->getName() << "\n";
@@ -719,6 +719,9 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
             continue;
         }
       } else if (EnableRollbackOnly) {
+        uint totalInsts = Callee->getInstructionCount() + Caller->getInstructionCount();
+        if (totalInsts > 750)
+          continue;
         OIC = InlineCost::getAlways("EnableRollbackOnly");
       } else { // baseline
         OIC = shouldInline(CB, GetInlineCost, ORE);
