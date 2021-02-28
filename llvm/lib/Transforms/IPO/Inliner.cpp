@@ -88,6 +88,12 @@ STATISTIC(NumInlined, "Number of functions inlined");
 STATISTIC(NumCallsDeleted, "Number of call sites deleted, not inlined");
 STATISTIC(NumDeleted, "Number of functions deleted because all callers found");
 STATISTIC(NumMergedAllocas, "Number of allocas merged together");
+STATISTIC(CallSitesAnalyzed, "number_callsites_analyzed_before_thresh");
+STATISTIC(MinInlinedCallee, "min_num_insts_in_a_inlined_callee");
+STATISTIC(MaxInlinedCallee, "max_num_insts_in_a_inlined_callee");
+STATISTIC(TotalInlinedCalleeInsts, "total_insts_in_the_inlined_callees");
+STATISTIC(SkippedBySolitary, "callsites_skipped_by_solitary");
+STATISTIC(SkippedByRollback, "callsites_skipped_by_rollback");
 
 /// Flag to disable manual alloca merging.
 ///
@@ -562,6 +568,47 @@ std::string sanitizeFunctionName(StringRef FName) {
   return StrFName;
 }
 
+bool IsFunctionInHistory(Function* F, SmallVector<std::pair<Function *, int>, 8> &InlineHistory) {
+  for(auto p : InlineHistory) {
+    Function *Finlined = p.first;
+    if (F == Finlined) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+unsigned CustomGetNumUses(Function *F, SmallVector<std::pair<Function *, int>, 8> &InlineHistory) {
+  unsigned NumUses = 0;
+  
+  errs() << "Analyzing uses of " << F->getName() << "\n";
+  unsigned n = 1; 
+  for (Value::use_iterator i = F->use_begin(), e = F->use_end(); i != e; ++i) {
+    
+    errs() << "Use " << n << " of function " << F->getName() << ":\n";
+    User* U = &*i->getUser();
+    // U->dump();
+    if (Instruction *I = dyn_cast<Instruction>(U)) {
+      Function* FParent = I->getParent()->getParent();
+      // if(FParent->getNumUses() == 0) {
+      //   errs() << "/\\ Dead code. (Presente na função " << FParent->getName() << ")\n";
+      // }
+      errs() << "/\\ Present on function " << FParent->getName();
+      if(IsFunctionInHistory(FParent, InlineHistory)) {
+        errs() << " < This function was already inlined. Ignoring this use.\n";
+      } else {
+        errs() << "\n";
+        NumUses++;
+      }
+    } else {
+      NumUses++;
+    }
+    n++;
+  }
+  return NumUses;
+}
+
 static bool
 inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
                 std::function<AssumptionCache &(Function &)> GetAssumptionCache,
@@ -692,9 +739,11 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
       OptimizationRemarkEmitter ORE(Caller);
 
       llvm::Optional<llvm::InlineCost> OIC;
-      // Check if function is marked how not inline
+      CallSitesAnalyzed++;
+      
+      // Check if function is marked as no inline
       InlineCost IC = GetInlineCost(CB);
-      if (!IC && IC.isNever()) {
+      if ((EnableTrivialInlining || EnableRollback || EnableRollbackOnly) && !IC && IC.isNever()) {
         continue;
       }
 
@@ -702,8 +751,11 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
           Callee->isDiscardableIfUnused() && Callee->getNumUses() == 1;
       if (EnableTrivialInlining) {
         uint totalInsts = Callee->getInstructionCount() + Caller->getInstructionCount();
-        if (Callee->getNumUses() != 1 || totalInsts > 5000)
+        if (Callee->getNumUses() != 1 || totalInsts > 5000) {
+          SkippedBySolitary++;
           continue;
+        }
+        Callee->setLinkage(llvm::GlobalValue::InternalLinkage);
         // errs() << "[Trivial]: Callee " << Callee->getName() << " (" << Callee->getInstructionCount() << ") on Caller " << Caller->getName() << " (" << Caller->getInstructionCount() << ") = " << totalInsts << "\n"; 
         OIC = InlineCost::getAlways("trivial inline");
         errs() << "\n\nInlining callee " << Callee->getName() << " on caller "
@@ -720,8 +772,11 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         }
       } else if (EnableRollbackOnly) {
         uint totalInsts = Callee->getInstructionCount() + Caller->getInstructionCount();
-        if (totalInsts > 750)
+        if (totalInsts > 750) {
+          SkippedByRollback++;
+          errs() << "[Callsite Blocked by Rollback Thresh]: |size:" << Callee->getInstructionCount() + Caller->getInstructionCount() << "\n";
           continue;
+        }
         OIC = InlineCost::getAlways("EnableRollbackOnly");
       } else { // baseline
         OIC = shouldInline(CB, GetInlineCost, ORE);
@@ -730,6 +785,8 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         if (!OIC)
           continue;
       }
+
+      errs() << "[Callsite Analyzed After Thresh]: |size:" << Callee->getInstructionCount() + Caller->getInstructionCount() << "\n";
 
       // If this call site is dead and it is to a readonly function, we should
       // just delete the call instead of trying to inline it, regardless of
@@ -776,6 +833,12 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         IDV.AddInlining(Callee, Caller);
 
         ++NumInlined;
+        uint InstsCallee = Callee->getInstructionCount();
+        if(InstsCallee < MinInlinedCallee || MinInlinedCallee == 0)
+          MinInlinedCallee = InstsCallee;
+        if(InstsCallee > MaxInlinedCallee)
+          MaxInlinedCallee = InstsCallee;
+        TotalInlinedCalleeInsts += InstsCallee;
 
         emitInlinedInto(ORE, DLoc, Block, *Callee, *Caller, *OIC);
 
@@ -807,8 +870,8 @@ inlineCallsImpl(CallGraphSCC &SCC, CallGraph &CG,
         }
       }
 
-      if (EnableTrivialInlining)
-        CG[Callee]->allReferencesDropped();
+      // if (EnableTrivialInlining)
+      //   CG[Callee]->allReferencesDropped();
 
       // If we inlined or deleted the last possible call site to the function,
       // delete the function body now.
