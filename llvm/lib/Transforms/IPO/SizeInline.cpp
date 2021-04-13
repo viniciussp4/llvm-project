@@ -1,6 +1,8 @@
 
 #include "llvm/Transforms/IPO/SizeInline.h"
 
+#include "llvm/Support/CommandLine.h"
+
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
@@ -8,6 +10,16 @@
 #include <algorithm>
 
 using namespace llvm;
+
+static cl::opt<unsigned> TinyThreshold (
+    "size-inline-trivial-tiny-threshold", cl::Hidden,
+    cl::desc("Always inine functions smaler than this threshold"),
+    cl::init(2));
+
+static cl::opt<unsigned> TrivialNumAttempts (
+    "size-inline-trivial-attempts", cl::Hidden,
+    cl::desc("Iteratively perform the trivial inline"),
+    cl::init(2));
 
 static bool TrivialInlining(Module &M) {
   std::vector<Function*> AllFunctions;
@@ -20,24 +32,34 @@ static bool TrivialInlining(Module &M) {
     return F1->getInstructionCount() < F2->getInstructionCount();
   });
 
+  bool Changed = false;
   //from smallest to largest functions, perform trivial inlining
   for (Function *F : AllFunctions) {
-    if (F->getInstructionCount()<=2 || F->getNumUses()==1) {
+    if (F->getInstructionCount()<=TinyThreshold || F->getNumUses()==1) {
       errs() << "Trivially Inlining: " << F->getName() << "\n";
       for (User *U : F->users()) {
         if (CallBase *CB = dyn_cast<CallBase>(U)) {
           InlineFunctionInfo IFI;
 	  auto Result = InlineFunction(*CB, IFI);
+	  Changed = Changed || Result.isSuccess();
 	}
       }
+      //aggressive
+      if (F->getNumUses()==0) F->eraseFromParent(); //erase if unused
     }
   }
 
-  return false;
+  return Changed;
 }
 
 bool SizeInlining::runOnModule(Module &M) {
-  return TrivialInlining(M);
+  bool Changed = false;
+  for (unsigned i = 0; i<TrivialNumAttempts; i++) {
+    bool AnyInlining = TrivialInlining(M);
+    Changed = Changed || AnyInlining;
+    if (!AnyInlining) break;
+  }
+  return Changed;
 }
 
 
