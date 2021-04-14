@@ -1,6 +1,8 @@
 
 #include "llvm/Transforms/IPO/SizeInline.h"
 
+#include "llvm/Analysis/CallGraph.h"
+
 #include "llvm/Support/CommandLine.h"
 
 #include "llvm/Transforms/IPO.h"
@@ -12,14 +14,19 @@
 using namespace llvm;
 
 static cl::opt<unsigned> TinyThreshold (
-    "size-inline-trivial-tiny-threshold", cl::Hidden,
+    "size-inline-tiny-threshold", cl::Hidden,
     cl::desc("Always inine functions smaler than this threshold"),
     cl::init(2));
+
+static cl::opt<unsigned> SolitaryMaxThreshold (
+    "size-inline-solitary-max-threshold", cl::Hidden,
+    cl::desc("Always inine functions smaler than this threshold"),
+    cl::init(1000));
 
 static cl::opt<unsigned> TrivialNumAttempts (
     "size-inline-trivial-attempts", cl::Hidden,
     cl::desc("Iteratively perform the trivial inline"),
-    cl::init(2));
+    cl::init(5));
 
 static bool TrivialInlining(Module &M) {
   std::vector<Function*> AllFunctions;
@@ -32,10 +39,15 @@ static bool TrivialInlining(Module &M) {
     return F1->getInstructionCount() < F2->getInstructionCount();
   });
 
+  unsigned MaxSize = std::max(TinyThreshold, SolitaryMaxThreshold);
+
   bool Changed = false;
   //from smallest to largest functions, perform trivial inlining
   for (Function *F : AllFunctions) {
-    if (F->getInstructionCount()<=TinyThreshold || F->getNumUses()==1) {
+    size_t FSize = F->getInstructionCount();
+    if (FSize > MaxSize) break; //functions are sorted
+
+    if (FSize<=TinyThreshold || (F->getNumUses()==1 && FSize<=SolitaryMaxThreshold) ) {
       errs() << "Trivially Inlining: " << F->getName() << "\n";
       for (User *U : F->users()) {
         if (CallBase *CB = dyn_cast<CallBase>(U)) {
@@ -44,13 +56,21 @@ static bool TrivialInlining(Module &M) {
 	  Changed = Changed || Result.isSuccess();
 	}
       }
-      //aggressive
-      if (F->getNumUses()==0) F->eraseFromParent(); //erase if unused
+      //aggressive: erase if unused after inlining
+      if (F->getNumUses()==0) F->eraseFromParent(); 
     }
   }
 
   return Changed;
 }
+
+static bool SituationalInlining(Module &M) {
+  CallGraph CG(M);
+  //TODO: create SCC-based graph; navigate over the SCCs of this graph
+  //try to perform inlining within these SCCs.
+  return true;
+}
+
 
 bool SizeInlining::runOnModule(Module &M) {
   bool Changed = false;
