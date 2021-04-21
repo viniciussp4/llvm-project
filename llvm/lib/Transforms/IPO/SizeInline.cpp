@@ -15,17 +15,17 @@ using namespace llvm;
 
 static cl::opt<unsigned> TinyThreshold (
     "size-inline-tiny-threshold", cl::Hidden,
-    cl::desc("Always inine functions smaler than this threshold"),
+    cl::desc("Always inine tiny functions."),
     cl::init(2));
 
 static cl::opt<unsigned> SolitaryMaxThreshold (
     "size-inline-solitary-max-threshold", cl::Hidden,
-    cl::desc("Always inine functions smaler than this threshold"),
+    cl::desc("Limit the size of functions inlined due to solitary calls."),
     cl::init(1000));
 
 static cl::opt<unsigned> TrivialNumAttempts (
     "size-inline-trivial-attempts", cl::Hidden,
-    cl::desc("Iteratively perform the trivial inline"),
+    cl::desc("Iteratively perform the trivial inlining."),
     cl::init(5));
 
 static bool TrivialInlining(Module &M) {
