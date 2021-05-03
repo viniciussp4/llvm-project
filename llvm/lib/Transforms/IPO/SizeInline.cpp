@@ -47,17 +47,22 @@ static bool TrivialInlining(Module &M) {
     size_t FSize = F->getInstructionCount();
     if (FSize > MaxSize) break; //functions are sorted
 
-    if (FSize<=TinyThreshold || (F->getNumUses()==1 && FSize<=SolitaryMaxThreshold) ) {
+    if (F->getNumUses() > 0 &&
+        (FSize<=TinyThreshold || (F->getNumUses()==1 && FSize<=SolitaryMaxThreshold))) {
       errs() << "Trivially Inlining: " << F->getName() << "\n";
-      for (User *U : F->users()) {
+
+      auto it = F->users().begin();
+      while (it != F->users().end()) {
+        User *U = *it++;
+
         if (CallBase *CB = dyn_cast<CallBase>(U)) {
           InlineFunctionInfo IFI;
-	  auto Result = InlineFunction(*CB, IFI);
-	  Changed = Changed || Result.isSuccess();
-	}
+          auto Result = InlineFunction(*CB, IFI);
+          Changed = Changed || Result.isSuccess();
+        }
       }
       //aggressive: erase if unused after inlining
-      if (F->getNumUses()==0) F->eraseFromParent(); 
+      if (F->getNumUses()==0) F->eraseFromParent();
     }
   }
 
